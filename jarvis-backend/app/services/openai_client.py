@@ -174,34 +174,13 @@ class FakeLLMClient(LLMClient):
         goal = state.task_goal or "Execute approved repository task"
         return [
             TaskPlanItem(
-                title="Inspect the current implementation",
-                description=(
-                    "Locate the files, endpoint handlers, and scoring flow involved in this request "
-                    f"so we understand how `{goal}` fits into the current code."
-                ),
+                title="Figure out the approach",
+                description=f"I'll check out the current code and figure out where we need to make changes for {goal}",
                 scope=[],
             ),
             TaskPlanItem(
-                title="Design the alternative flow",
-                description=(
-                    "Define the new endpoint behavior, how the RAG-only path should work, "
-                    "and what should stay compatible with the existing API."
-                ),
-                scope=[],
-            ),
-            TaskPlanItem(
-                title="Implement the backend changes",
-                description=(
-                    "Update the relevant route, service, and supporting code to deliver the new "
-                    "behavior without affecting the existing endpoint more than necessary."
-                ),
-                scope=[],
-            ),
-            TaskPlanItem(
-                title="Validate the result",
-                description=(
-                    "Review changed files and run the most relevant checks we can execute for this repository."
-                ),
+                title="Make the changes",
+                description="Then I'll update the code and make sure it all works together",
                 scope=[],
             ),
         ]
@@ -257,14 +236,10 @@ class FakeLLMClient(LLMClient):
             return "several files across the codebase"
         
         return (
-            f"Let me explain this step in more detail. "
-            f"This is about {current_step.title}. "
-            f"This step involves: {current_step.description} "
-            f"The scope includes working with {format_files(current_step.scope)}. "
-            f"In the context of your question about {user_question}, "
-            f"this is important because it helps us achieve the overall goal of {state.task_goal}. "
-            f"The changes will be localized and focused on maintaining code quality while implementing the requested functionality. "
-            f"Does this answer your question? Feel free to ask more, or say approve if you're ready to move forward."
+            f"So for {current_step.title} - {current_step.description}. "
+            f"We'll be working with {format_files(current_step.scope)}. "
+            f"This helps us {state.task_goal}. "
+            f"Does that answer your question about {user_question}? Let me know if you want more details or if you're good to proceed."
         )
 
     async def revise_plan_step(
@@ -421,11 +396,13 @@ class OpenAIAgentsClient(FakeLLMClient):
     ) -> List[TaskPlanItem]:
         self._require_live_agent()
         prompt = (
-            "Turn this implementation request into 2 to 5 concrete reviewable steps as a JSON array.\n"
+            "Turn this implementation request into 2 to 3 concrete reviewable steps as a JSON array.\n"
             "Each item must have title, description, and scope.\n\n"
             "IMPORTANT REQUIREMENTS:\n"
+            "- Keep it to 2-3 steps MAX - combine related work\n"
             "- Do not just paraphrase the user's request\n"
             "- Do not quote or copy the user's original prompt verbatim in any step description\n"
+<<<<<<< Updated upstream
             "- Make each step specific to repository work\n"
             "- Separate inspection/design work from implementation and validation\n"
             "- Make descriptions conversational and detailed, but NO markdown formatting\n"
@@ -434,13 +411,25 @@ class OpenAIAgentsClient(FakeLLMClient):
             "- For example, say 'the client file in the services folder' not 'services/client.py'\n"
             "- Explain what will be changed and why in plain language\n"
             "- Use the repository context and included file contents to anchor the steps to real modules and surfaces\n"
+=======
+            "- Write like you're explaining to a coworker - use 'I'll' or 'We'll' or 'Let's'\n"
+            "- Be casual and conversational - contractions are good\n"
+            "- Write for natural voice output\n"
+            "- When mentioning files, use natural language like 'the client file in services'\n"
+            "- One sentence per description - keep it brief\n"
+>>>>>>> Stashed changes
             "- In the 'scope' array, include actual file paths or patterns for technical processing\n\n"
             "Task goal: %s\n"
             "Requirements: %s\n"
             "Plan text:\n%s\n\n"
+<<<<<<< Updated upstream
             "Repository context:\n%s\n\n"
             "Return a JSON array of step objects with conversational descriptions:"
         ) % (state.task_goal, state.requirements, plan, state.planning_context or "")
+=======
+            "Return a JSON array of step objects with casual, coworker-style descriptions:"
+        ) % (state.task_goal, state.requirements, plan)
+>>>>>>> Stashed changes
         parsed = await self._run_json_agent(
             "Task splitter agent",
             prompt,
