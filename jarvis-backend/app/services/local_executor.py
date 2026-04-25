@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import shlex
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
@@ -30,9 +31,8 @@ class LocalExecutor:
                 continue
             if path.is_file():
                 files.append(str(path.relative_to(root)))
-            if len(files) >= max_files:
-                break
-        return sorted(files)
+        files.sort()
+        return files[:max_files]
 
     def read_file(self, repo_path: str, relative_path: str, max_chars: int = 20000) -> str:
         path = self._resolve_inside_repo(repo_path, relative_path)
@@ -63,11 +63,15 @@ class LocalExecutor:
     ) -> List[str]:
         root = self._assert_repo_allowed(repo_path)
         normalized_patch = _normalize_patch_text(patch_text)
+        normalized_patch = _repair_patch_headers(
+            patch_text=normalized_patch,
+            repo_root=root,
+            scope=scope or [],
+        )
         changed_paths = changed_paths_from_patch(normalized_patch)
         if not changed_paths:
             raise ValueError(
-                "Generated patch did not contain a valid git diff. "
-                "Expected unified diff content with file headers."
+                _describe_missing_patch_headers(normalized_patch, scope or [])
             )
         outside_scope = paths_outside_scope(changed_paths, scope or [])
         if outside_scope:
@@ -81,15 +85,23 @@ class LocalExecutor:
                 cwd=str(root),
                 stdin=normalized_patch,
             )
+            apply_args = ["git", "apply", "-"]
             if check[0] != 0:
-                raise RuntimeError("Patch check failed: %s" % check[2])
+                recount_check = await self._run_process(
+                    ["git", "apply", "--recount", "--check", "-"],
+                    cwd=str(root),
+                    stdin=normalized_patch,
+                )
+                if recount_check[0] != 0:
+                    raise RuntimeError("Patch check failed: %s" % _describe_patch_apply_error(check[2]))
+                apply_args = ["git", "apply", "--recount", "-"]
             result = await self._run_process(
-                ["git", "apply", "-"],
+                apply_args,
                 cwd=str(root),
                 stdin=normalized_patch,
             )
             if result[0] != 0:
-                raise RuntimeError("Patch apply failed: %s" % result[2])
+                raise RuntimeError("Patch apply failed: %s" % _describe_patch_apply_error(result[2]))
         return changed_paths
 
     async def run_allowed_command(
@@ -217,3 +229,94 @@ def _normalize_patch_text(patch_text: str) -> str:
     if not normalized:
         return ""
     return normalized + "\n"
+
+
+def _repair_patch_headers(
+    patch_text: str,
+    repo_root: Path,
+    scope: Iterable[str],
+) -> str:
+    if not patch_text or not _looks_like_hunk_only_patch(patch_text):
+        return patch_text
+
+    target_path = _infer_single_patch_target(repo_root, scope)
+    if target_path is None:
+        return patch_text
+
+    return (
+        "diff --git a/{path} b/{path}\n"
+        "--- a/{path}\n"
+        "+++ b/{path}\n"
+        "{body}"
+    ).format(path=target_path, body=patch_text)
+
+
+def _infer_single_patch_target(repo_root: Path, scope: Iterable[str]) -> Optional[str]:
+    candidates: List[str] = []
+    seen = set()
+    for raw_item in scope:
+        item = str(raw_item).strip().strip("/\\")
+        if not item:
+            continue
+        path = (repo_root / item).resolve()
+        if not _is_relative_to(path, repo_root):
+            continue
+        if not path.is_file():
+            continue
+        relative = path.relative_to(repo_root).as_posix()
+        if relative not in seen:
+            seen.add(relative)
+            candidates.append(relative)
+    if len(candidates) == 1:
+        return candidates[0]
+    return None
+
+
+def _looks_like_hunk_only_patch(patch_text: str) -> bool:
+    if not patch_text:
+        return False
+    if "diff --git " in patch_text or "\n--- " in patch_text or patch_text.startswith("--- "):
+        return False
+    return any(line.startswith("@@ ") or line == "@@" for line in patch_text.splitlines())
+
+
+def _describe_missing_patch_headers(patch_text: str, scope: Iterable[str]) -> str:
+    if _looks_like_hunk_only_patch(patch_text):
+        inferred_target = list(scope)
+        if inferred_target:
+            return (
+                "Generated patch contained diff hunks without file headers. "
+                "Expected a unified git diff with `diff --git`, `---`, and `+++` lines."
+            )
+        return (
+            "Generated patch contained diff hunks without file headers and no single target file "
+            "could be inferred from scope. Expected a unified git diff with `diff --git`, `---`, and `+++` lines."
+        )
+    return (
+        "Generated patch did not contain a valid git diff. "
+        "Expected unified diff content with file headers."
+    )
+
+
+def _describe_patch_apply_error(stderr: str) -> str:
+    message = stderr.strip()
+    lowered = message.lower()
+    if "patch fragment without header" in lowered:
+        return (
+            "Generated patch contained a diff hunk without file headers. "
+            "The model must return a unified git diff with `diff --git`, `---`, and `+++` lines. "
+            "Original git error: %s" % message
+        )
+    if "no valid patches in input" in lowered:
+        return (
+            "Generated patch did not contain a valid unified git diff. "
+            "Original git error: %s" % message
+        )
+    if "corrupt patch" in lowered:
+        return (
+            "Generated patch was malformed. Ensure hunk headers match the changed lines, "
+            "every context line starts with a space, every removed line starts with `-`, "
+            "every added line starts with `+`, and each file has complete diff headers. "
+            "Original git error: %s" % message
+        )
+    return message

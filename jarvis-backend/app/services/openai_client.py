@@ -15,6 +15,7 @@ class TaskImplementationResult(BaseModel):
     result_summary: str
     proposed_patch: Optional[str] = None
     changed_files: List[str] = Field(default_factory=list)
+    needed_files: List[str] = Field(default_factory=list)
     test_command: Optional[str] = None
 
     @field_validator("test_command", mode="before")
@@ -42,6 +43,17 @@ class TaskImplementationResult(BaseModel):
         if normalized.endswith(".") and re.fullmatch(r"[A-Za-z0-9 ()/_-]+\.", normalized):
             return None
         return normalized
+
+    @field_validator("needed_files", mode="before")
+    @classmethod
+    def _normalize_needed_files(cls, value: Optional[Any]) -> List[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return _dedupe_strings(re.split(r"[\n,]+", value))
+        if isinstance(value, (list, tuple, set)):
+            return _dedupe_strings(str(item) for item in value)
+        return []
 
 
 class LLMClient:
@@ -552,12 +564,25 @@ class OpenAIAgentsClient(FakeLLMClient):
         memory_context: str,
     ) -> TaskImplementationResult:
         prompt = (
-            "Propose implementation output as JSON with result_summary, proposed_patch, changed_files, test_command.\n"
+            "Propose implementation output as JSON with result_summary, proposed_patch, changed_files, needed_files, test_command.\n"
             "This is a real repository modification flow, not an analysis-only flow.\n"
+            "This is the execution phase. Do not ask the user for more context from this prompt.\n"
+            "You must either produce a patch from the repository files you can see, or request more repository files through `needed_files`.\n"
+            "The task payload is an implementation brief synthesized from approved conversational plan steps.\n"
+            "Treat inspection, design, and validation steps in that brief as context, not as permission to stop without changes.\n"
+            "Treat the repository capability summary and visible files as authoritative grounding.\n"
+            "If the task requires a new page, stylesheet, endpoint, template, or other feature surface and no exact target file exists yet, you may create the minimal new files needed as long as they fit the detected stack and repository structure.\n"
+            "Do not stop just because an exact target file is missing if the brief explicitly allows creating the smallest grounded addition.\n"
+            "Prefer integrating into an existing app shell when one is visible. If none is visible, create the smallest viable grounded entrypoint consistent with the detected stack instead of inventing an unrelated framework.\n"
+            "If the repo context includes previous patch application errors, return a corrected patch that fixes those exact git apply issues.\n"
             "If code changes are needed, `proposed_patch` must be a raw unified git diff string.\n"
+            "Every modified file must include its own full header block: `diff --git`, `---`, `+++`, then hunks.\n"
+            "Never return hunk-only fragments that start directly with `@@`.\n"
             "Do not wrap the patch in markdown fences.\n"
             "Do not add commentary before or after the diff.\n"
-            "For MODIFY_CODE tasks, do not set `proposed_patch` to null unless the repository already fully satisfies the request.\n"
+            "Use `needed_files` only when you need additional specific files before proposing a safe patch; otherwise return an empty list.\n"
+            "For MODIFY_CODE tasks, do not set `proposed_patch` to null unless the repository already fully satisfies the request or you need more files through `needed_files`.\n"
+            "If no more repository files would help and you cannot produce a patch, explain the blocker in `result_summary` and leave `needed_files` empty.\n"
             "`test_command` must be either null or a real shell command that can be executed from the repository root.\n"
             "Never use explanatory prose in `test_command`.\n"
             "Only include patches inside scope. Task: %s\nRepo context:\n%s\nMemory:\n%s"
@@ -642,6 +667,18 @@ def _extract_json_payload(raw_output: str) -> Optional[Any]:
         except Exception:
             continue
     return None
+
+
+def _dedupe_strings(values) -> List[str]:
+    items: List[str] = []
+    seen = set()
+    for value in values:
+        normalized = " ".join(str(value).strip().strip("`'\"").split())
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        items.append(normalized)
+    return items
 
 
 def _normalize_task_plan_items(parsed: Any) -> List[TaskPlanItem]:

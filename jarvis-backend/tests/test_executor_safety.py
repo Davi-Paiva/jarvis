@@ -139,6 +139,60 @@ def test_executor_allows_any_command_when_permissive_mode_is_on(tmp_path):
     asyncio.run(scenario())
 
 
+def test_executor_repairs_hunk_only_patch_for_single_scoped_file(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "training.py").write_text(
+        "class TrainingRequest:\n"
+        "    pass\n"
+        "\n"
+        "enabled = False\n",
+        encoding="utf-8",
+    )
+    executor = LocalExecutor(_settings(tmp_path))
+
+    patch_text = """@@ -1,4 +1,4 @@
+-class TrainingRequest:
+-    pass
++class TrainingRequest:
++    retries = 3
+ 
+ enabled = False
+"""
+
+    async def scenario():
+        changed = await executor.apply_patch(
+            str(repo),
+            patch_text,
+            scope=["training.py"],
+        )
+        assert changed == ["training.py"]
+        assert "retries = 3" in (repo / "training.py").read_text(encoding="utf-8")
+
+    asyncio.run(scenario())
+
+
+def test_executor_rejects_hunk_only_patch_without_single_file_scope(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "one.py").write_text("value = 1\n", encoding="utf-8")
+    (repo / "two.py").write_text("value = 2\n", encoding="utf-8")
+    executor = LocalExecutor(_settings(tmp_path))
+
+    async def scenario():
+        try:
+            await executor.apply_patch(
+                str(repo),
+                "@@ -1 +1 @@\n-value = 1\n+value = 3\n",
+                scope=["one.py", "two.py"],
+            )
+            raise AssertionError("ambiguous hunk-only patch should fail")
+        except ValueError as exc:
+            assert "without file headers" in str(exc)
+
+    asyncio.run(scenario())
+
+
 def _settings(tmp_path, allow_all_commands=True):
     return Settings(
         jarvis_data_dir=str(tmp_path / "data"),

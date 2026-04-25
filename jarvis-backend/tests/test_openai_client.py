@@ -34,6 +34,15 @@ def test_task_implementation_result_keeps_real_test_command():
     assert result.test_command == "pytest tests/test_api.py"
 
 
+def test_task_implementation_result_normalizes_needed_files():
+    result = TaskImplementationResult(
+        result_summary="need files",
+        needed_files="src/App.tsx, src/layout.tsx\nsrc/App.tsx",
+    )
+
+    assert result.needed_files == ["src/App.tsx", "src/layout.tsx"]
+
+
 def test_openai_agents_client_does_not_fallback_when_runtime_is_unavailable(tmp_path):
     settings = Settings(
         openai_api_key=None,

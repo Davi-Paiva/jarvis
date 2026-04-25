@@ -146,6 +146,11 @@ class RepositoryAgent:
         self.state.plan_steps = []
         self.state.current_plan_step_index = 0
         self.state.execution_approved = False
+        self.state.task_agents = []
+        self.state.changed_files = []
+        self.state.test_results = []
+        self.state.final_report = None
+        self.state.last_error = None
         self.state.phase = RepositoryAgentPhase.BRANCH_PERMISSION
         self.registry.save_agent_state(self.state)
         self.memory_service.record_task_started(self.state)
@@ -236,46 +241,14 @@ class RepositoryAgent:
         self.manager.release_intake_lock(self.state.repo_agent_id)
         self.state.phase = RepositoryAgentPhase.EXECUTING
         self.registry.save_agent_state(self.state)
-        self.manager.emit_progress(self.state.repo_agent_id, "Plan approved. Execution started.")
 
         # Determine task plan: either from approved steps or by calling LLM
-        if task_plan_steps is not None:
-            # New flow: create tasks directly from approved plan steps
-            task_states: List[TaskAgentState] = []
-            for step in task_plan_steps:
-                task_state = TaskAgentState(
-                    repo_agent_id=self.state.repo_agent_id,
-                    title=step.get("title", "Task"),
-                    description=step.get("description", ""),
-                    scope=step.get("scope", []),
-                )
-                self.registry.save_task_state(task_state)
-                self.state.task_agents.append(task_state.task_agent_id)
-                self.registry.save_agent_state(self.state)
-
-                task_agent = TaskAgent(
-                    state=task_state,
-                    registry=self.registry,
-                    executor=self.executor,
-                    llm_client=self.llm_client,
-                    memory_service=self.memory_service,
-                    graph_checkpointer=self.graph_checkpointer,
-                )
-                completed_task = await task_agent.execute(self.state)
-                task_states.append(completed_task)
-                self.state.changed_files.extend(
-                    item for item in completed_task.changed_files if item not in self.state.changed_files
-                )
-                self.state.test_results.extend(completed_task.test_results)
-                if completed_task.status == TaskAgentStatus.FAILED:
-                    self.state.phase = RepositoryAgentPhase.FAILED
-                    self.state.last_error = completed_task.last_error
-                    self.registry.save_agent_state(self.state)
-                    self.manager.emit_failed(
-                        self.state.repo_agent_id,
-                        completed_task.last_error or "Task agent failed.",
-                    )
-                    return self.state
+        if task_plan_steps is not None and self.state.intent_type == "MODIFY_CODE":
+            execution_task_state = self._build_execution_task(task_plan_steps)
+            task_states = [execution_task_state]
+            completed_task = await self._execute_task_agent(execution_task_state)
+            if completed_task is None:
+                return self.state
         else:
             # Old flow: split tasks using LLM
             try:
@@ -302,75 +275,12 @@ class RepositoryAgent:
                     description=task_item.description,
                     scope=task_item.scope,
                 )
-                self.registry.save_task_state(task_state)
-                self.state.task_agents.append(task_state.task_agent_id)
-                self.registry.save_agent_state(self.state)
-
-                task_agent = TaskAgent(
-                    state=task_state,
-                    registry=self.registry,
-                    executor=self.executor,
-                    llm_client=self.llm_client,
-                    memory_service=self.memory_service,
-                    graph_checkpointer=self.graph_checkpointer,
-                )
-                completed_task = await task_agent.execute(self.state)
-                task_states.append(completed_task)
-                self.state.changed_files.extend(
-                    item for item in completed_task.changed_files if item not in self.state.changed_files
-                )
-                self.state.test_results.extend(completed_task.test_results)
-                if completed_task.status == TaskAgentStatus.FAILED:
-                    self.state.phase = RepositoryAgentPhase.FAILED
-                    self.state.last_error = completed_task.last_error
-                    self.registry.save_agent_state(self.state)
-                    self.manager.emit_failed(
-                        self.state.repo_agent_id,
-                        completed_task.last_error or "Task agent failed.",
-                    )
+                completed_task = await self._execute_task_agent(task_state)
+                if completed_task is None:
                     return self.state
+                task_states.append(completed_task)
 
-        self.state.phase = RepositoryAgentPhase.FINALIZING
-        self.registry.save_agent_state(self.state)
-        self.state.final_report = await self.llm_client.final_report(self.state, task_states)
-        self.state.phase = RepositoryAgentPhase.DONE
-        self.registry.save_agent_state(self.state)
-        self.memory_service.record_task_completed(self.state, task_states)
-
-        for task_state in task_states:
-            task_agent = TaskAgent(
-                state=task_state,
-                registry=self.registry,
-                executor=self.executor,
-                llm_client=self.llm_client,
-                memory_service=self.memory_service,
-                graph_checkpointer=self.graph_checkpointer,
-            )
-            task_agent.mark_dead()
-
-        # Prepare completion message
-        if self.state.final_report:
-            completion_message = (
-                f"{self.state.final_report}\n\n"
-                "You can review the changes in the desktop app."
-            )
-        else:
-            completion_message = "I've completed the task. You can review the changes in the desktop app."
-
-        self.manager.enqueue_turn(
-            TurnRequest(
-                user_id=self.state.user_id,
-                agent_id=self.state.repo_agent_id,
-                repo_agent_id=self.state.repo_agent_id,
-                type=TurnType.COMPLETION,
-                priority=40,
-                message=completion_message,
-                context="RepositoryAgent final report.",
-                requires_user_response=False,
-            )
-        )
-        self.manager.emit_completed(self.state.repo_agent_id, "Execution completed.")
-        return self.state
+        return await self._finalize_execution()
 
     async def _handle_branch_permission_response(self, text: str) -> RepositoryAgentState:
         if _looks_like_yes(text):
@@ -844,6 +754,138 @@ class RepositoryAgent:
         self.manager.enqueue_turn(turn)
         return turn
 
+    def _build_execution_task(self, approved_steps: List[dict]) -> TaskAgentState:
+        aggregated_scope = _merge_plan_step_scope(approved_steps)
+        repo_files = self.executor.list_files(self.state.repo_path, max_files=400)
+        capability_summary = _summarize_repo_capabilities(repo_files)
+        creation_allowed = _goal_allows_new_files(self.state.task_goal or self.state.original_user_prompt or "")
+        brief_sections = [
+            "Implementation brief for the approved repository change.",
+            "Primary goal:\n%s" % (self.state.task_goal or self.state.original_user_prompt or "Implement the approved change."),
+        ]
+        if self.state.requirements:
+            brief_sections.append(
+                "Requirements:\n%s" % "\n".join("- %s" % item for item in self.state.requirements)
+            )
+        if approved_steps:
+            brief_sections.append(
+                "Approved plan steps:\n%s"
+                % "\n".join(
+                    "%s. %s - %s"
+                    % (
+                        index + 1,
+                        step.get("title", "Step"),
+                        step.get("description", ""),
+                    )
+                    for index, step in enumerate(approved_steps)
+                )
+            )
+        if aggregated_scope:
+            brief_sections.append(
+                "Focus paths from the approved plan:\n%s"
+                % "\n".join("- %s" % item for item in aggregated_scope)
+            )
+        if capability_summary:
+            brief_sections.append("Repository capability summary:\n%s" % capability_summary)
+        brief_sections.append(
+            "Execution guidance:\n"
+            "- Treat the approved inspection and design steps as already-resolved context.\n"
+            "- This phase is for implementing the approved change in code.\n"
+            "- Ground your implementation in the real repository files and the detected stack.\n"
+            "- If you still need repository details, request specific files through needed_files.\n"
+            "- You may create new files when the requested feature has no existing target file.\n"
+            "- Prefer extending an existing surface when one exists.\n"
+            "- If no matching UI/template/static surface exists but the task explicitly asks for a new page, stylesheet, endpoint, or other new feature surface, create the smallest viable grounded entrypoint consistent with the detected stack instead of stopping."
+        )
+        brief_sections.append(
+            "File creation policy:\n"
+            "- Creation allowed: %s\n"
+            "- Do not invent unrelated frameworks or product structure.\n"
+            "- If the repo already indicates a web stack, integrate there.\n"
+            "- If the repo has no existing web surface and the request is explicitly for a new HTML/CSS or docs page, prefer a minimal standalone surface such as docs/ or static/ unless existing server files indicate a better integration point."
+            % ("yes" if creation_allowed else "no, unless it is required to complete the approved change")
+        )
+        return TaskAgentState(
+            repo_agent_id=self.state.repo_agent_id,
+            title="Implement approved repository change",
+            description="\n\n".join(section for section in brief_sections if section.strip()),
+            scope=aggregated_scope,
+        )
+
+    async def _execute_task_agent(self, task_state: TaskAgentState) -> Optional[TaskAgentState]:
+        self.registry.save_task_state(task_state)
+        self.state.task_agents.append(task_state.task_agent_id)
+        self.registry.save_agent_state(self.state)
+
+        task_agent = TaskAgent(
+            state=task_state,
+            registry=self.registry,
+            executor=self.executor,
+            llm_client=self.llm_client,
+            memory_service=self.memory_service,
+            graph_checkpointer=self.graph_checkpointer,
+        )
+        completed_task = await task_agent.execute(self.state)
+        self.state.changed_files.extend(
+            item for item in completed_task.changed_files if item not in self.state.changed_files
+        )
+        self.state.test_results.extend(completed_task.test_results)
+        if completed_task.status == TaskAgentStatus.FAILED:
+            self.state.phase = RepositoryAgentPhase.FAILED
+            self.state.last_error = completed_task.last_error
+            self.registry.save_agent_state(self.state)
+            self.manager.emit_failed(
+                self.state.repo_agent_id,
+                completed_task.last_error or "Task agent failed.",
+            )
+            return None
+        return completed_task
+
+    async def _finalize_execution(self) -> RepositoryAgentState:
+        self.state.phase = RepositoryAgentPhase.FINALIZING
+        self.registry.save_agent_state(self.state)
+        all_task_states = [
+            task
+            for task_id in self.state.task_agents
+            for task in [self.registry.persistence.get_task_agent(task_id)]
+            if task is not None
+        ]
+        self.state.final_report = await self.llm_client.final_report(self.state, all_task_states)
+        self.state.phase = RepositoryAgentPhase.DONE
+        self.registry.save_agent_state(self.state)
+        self.memory_service.record_task_completed(self.state, all_task_states)
+
+        for task_state in all_task_states:
+            task_agent = TaskAgent(
+                state=task_state,
+                registry=self.registry,
+                executor=self.executor,
+                llm_client=self.llm_client,
+                memory_service=self.memory_service,
+                graph_checkpointer=self.graph_checkpointer,
+            )
+            task_agent.mark_dead()
+
+        completion_message = (
+            f"{self.state.final_report}\n\nYou can review the changes in the desktop app."
+            if self.state.final_report
+            else "I've completed the task. You can review the changes in the desktop app."
+        )
+        self.manager.enqueue_turn(
+            TurnRequest(
+                user_id=self.state.user_id,
+                agent_id=self.state.repo_agent_id,
+                repo_agent_id=self.state.repo_agent_id,
+                type=TurnType.COMPLETION,
+                priority=40,
+                message=completion_message,
+                context="RepositoryAgent final report.",
+                requires_user_response=False,
+            )
+        )
+        self.manager.emit_completed(self.state.repo_agent_id, "Execution completed.")
+        return self.state
+
     def _fail_planning_step(
         self,
         user_message: str,
@@ -906,6 +948,96 @@ def _looks_like_approval(response: str) -> bool:
     return any(item in normalized for item in approvals if len(item) > 2)
 
 
+def _merge_plan_step_scope(plan_steps: List[dict]) -> List[str]:
+    merged: List[str] = []
+    seen = set()
+    for step in plan_steps:
+        for item in step.get("scope", []) or []:
+            normalized = str(item).strip().strip("/")
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            merged.append(normalized)
+    return merged
+
+
+def _goal_allows_new_files(goal: str) -> bool:
+    normalized = (goal or "").lower()
+    creation_terms = (
+        "create ",
+        "build ",
+        "add a page",
+        "add page",
+        "new page",
+        "landing page",
+        "html",
+        "css",
+        "stylesheet",
+        "endpoint",
+        "websocket",
+        "template",
+        "static page",
+        "docs page",
+        "view",
+        "screen",
+    )
+    return any(term in normalized for term in creation_terms)
+
+
+def _summarize_repo_capabilities(files: List[str]) -> str:
+    if not files:
+        return "- No repository files were listed."
+
+    lowered = [path.lower() for path in files]
+    frontend_files = [
+        path for path in files
+        if path.lower().endswith((".html", ".css", ".scss", ".tsx", ".jsx", ".ts", ".js"))
+        or any(segment in path.lower() for segment in ("/src/", "/pages/", "/components/", "/public/", "/templates/", "/static/"))
+    ]
+    python_files = [path for path in files if path.lower().endswith(".py")]
+    docs_files = [path for path in files if path.lower().startswith("docs/") or path.lower().endswith(".md")]
+    package_files = [path for path in files if path.lower().endswith(("package.json", "vite.config.ts", "vite.config.js"))]
+    requirements_files = [path for path in files if path.lower().endswith(("requirements.txt", "pyproject.toml", "poetry.lock"))]
+    fastapi_files = [path for path in files if path.lower().endswith(".py") and any(name in path.lower() for name in ("main.py", "app.py", "server.py"))]
+    template_dirs = [path for path in files if any(segment in path.lower() for segment in ("/templates/", "/static/"))]
+
+    lines = [
+        "- Repository file sample size: %s" % len(files),
+        "- Frontend/template/static files detected: %s" % ("yes" if frontend_files else "no"),
+        "- Python application files detected: %s" % ("yes" if python_files else "no"),
+        "- Package or Vite-style frontend markers detected: %s" % ("yes" if package_files else "no"),
+        "- Python dependency markers detected: %s" % ("yes" if requirements_files else "no"),
+    ]
+    if frontend_files:
+        lines.append(
+            "- Example frontend or presentation files: %s"
+            % ", ".join(frontend_files[:5])
+        )
+    if template_dirs:
+        lines.append(
+            "- Example template/static paths: %s"
+            % ", ".join(template_dirs[:5])
+        )
+    if fastapi_files:
+        lines.append(
+            "- Example Python app entry files: %s"
+            % ", ".join(fastapi_files[:5])
+        )
+    elif python_files:
+        lines.append(
+            "- Example Python files: %s"
+            % ", ".join(python_files[:5])
+        )
+    if docs_files:
+        lines.append(
+            "- Example docs or markdown files: %s"
+            % ", ".join(docs_files[:5])
+        )
+    if not frontend_files and python_files:
+        lines.append(
+            "- If a new UI surface is required and no existing web surface is present, prefer the smallest grounded addition rather than assuming an entire framework."
+        )
+    return "\n".join(lines)
 def _looks_like_yes(text: str) -> bool:
     normalized = _normalize_short_response(text)
     positives = {

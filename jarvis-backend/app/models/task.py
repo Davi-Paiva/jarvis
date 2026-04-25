@@ -41,7 +41,6 @@ class TaskAgentState(BaseModel):
     proposed_patch: Optional[str] = None
     changed_files: List[str] = Field(default_factory=list)
     test_results: List[str] = Field(default_factory=list)
-    blocking_question: Optional[str] = None
     result_summary: Optional[str] = None
     last_error: Optional[str] = None
     created_at: datetime = Field(default_factory=utc_now)

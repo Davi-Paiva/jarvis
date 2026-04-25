@@ -27,6 +27,107 @@ class LiveNoPatchLLM(FakeLLMClient):
         return TaskImplementationResult(result_summary="Reviewed repository without patch.")
 
 
+class LiveUsesRepoStructureBeforeAskingLLM(FakeLLMClient):
+    def __init__(self):
+        self.repo_contexts = []
+        self.calls = 0
+
+    def is_live(self) -> bool:
+        return True
+
+    async def split_tasks(self, state, plan):
+        from app.models.task import TaskPlanItem
+
+        return [
+            TaskPlanItem(
+                title="Add the wallet link action",
+                description="Update the frontend user options menu to add a link-wallet action.",
+                scope=["src"],
+            )
+        ]
+
+    async def implement_task(
+        self,
+        repo_state,
+        task_state,
+        repo_context,
+        memory_context,
+    ) -> TaskImplementationResult:
+        self.calls += 1
+        self.repo_contexts.append(repo_context)
+        if self.calls == 1:
+            return TaskImplementationResult(
+                result_summary="I need to inspect the exact menu component before editing.",
+                needed_files=["src/menu.tsx"],
+            )
+        return TaskImplementationResult(
+            result_summary="I could not identify the exact frontend component that owns the user options menu, so I could not apply a safe patch.",
+        )
+
+
+class LiveCapturesScopeFallbackLLM(FakeLLMClient):
+    def __init__(self):
+        self.repo_contexts = []
+
+    def is_live(self) -> bool:
+        return True
+
+    async def split_tasks(self, state, plan):
+        from app.models.task import TaskPlanItem
+
+        return [
+            TaskPlanItem(
+                title="Update the dashboard page",
+                description="Adjust the dashboard page and shared layout.",
+                scope=["frontend/pages-that-do-not-exist"],
+            )
+        ]
+
+    async def implement_task(
+        self,
+        repo_state,
+        task_state,
+        repo_context,
+        memory_context,
+    ) -> TaskImplementationResult:
+        self.repo_contexts.append(repo_context)
+        return TaskImplementationResult(result_summary="Reviewed fallback context without patch.")
+
+
+class LiveRetriesUpToFiveLLM(FakeLLMClient):
+    def __init__(self):
+        self.calls = 0
+        self.repo_contexts = []
+
+    def is_live(self) -> bool:
+        return True
+
+    async def split_tasks(self, state, plan):
+        from app.models.task import TaskPlanItem
+
+        return [
+            TaskPlanItem(
+                title="Update the homepage hero",
+                description="Add a short line in the hero area.",
+                scope=["src"],
+            )
+        ]
+
+    async def implement_task(
+        self,
+        repo_state,
+        task_state,
+        repo_context,
+        memory_context,
+    ) -> TaskImplementationResult:
+        self.calls += 1
+        self.repo_contexts.append(repo_context)
+        return TaskImplementationResult(
+            result_summary="Still need another file before editing.",
+            needed_files=["src/file%s.tsx" % self.calls],
+        )
+
+
 class BrokenPlanningLLM(FakeLLMClient):
     async def split_tasks(self, state, plan):
         return [{"title": "Inspect", "description": "Review the repo", "scope": "Repository inspection"}]
@@ -180,7 +281,7 @@ def test_orchestrator_activate_repo_agent_is_idempotent(tmp_path):
     asyncio.run(scenario())
 
 
-def test_live_modification_flow_fails_when_no_code_changes_are_proposed(tmp_path):
+def test_live_modification_flow_fails_without_extra_question_when_no_code_changes_are_proposed(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / "main.py").write_text("print('hello')\n", encoding="utf-8")
@@ -204,7 +305,117 @@ def test_live_modification_flow_fails_when_no_code_changes_are_proposed(tmp_path
 
         finished = await orchestrator.submit_user_response(turn.id, "yes")
         assert finished.agent.phase == RepositoryAgentPhase.FAILED
-        assert "without proposing any code changes" in (finished.agent.last_error or "")
+        assert finished.next_turn is None
+        assert "did not produce any code changes" in (finished.agent.last_error or "").lower()
+
+    asyncio.run(scenario())
+
+def test_live_flow_retries_with_requested_file_contents(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "src").mkdir()
+    (repo / "src" / "menu.tsx").write_text("export const menu = [];\n", encoding="utf-8")
+    llm = LiveUsesRepoStructureBeforeAskingLLM()
+    orchestrator = _orchestrator(tmp_path, llm_client=llm)
+
+    async def scenario():
+        agent = await orchestrator.create_repo_agent(str(repo))
+        started = await orchestrator.handle_user_message(
+            agent.repo_agent_id,
+            "add a link wallet action to the user options menu",
+        )
+        branch_answer = await orchestrator.submit_user_response(started.next_turn.id, "no")
+
+        turn = branch_answer.next_turn
+        while turn is not None and turn.type == TurnType.PLAN_STEP_REVIEW:
+            reviewed = await orchestrator.submit_user_response(turn.id, "yes")
+            turn = reviewed.next_turn
+
+        assert turn is not None
+        assert turn.type == TurnType.EXECUTION_APPROVAL
+
+        finished = await orchestrator.submit_user_response(turn.id, "yes")
+        assert finished.agent.phase == RepositoryAgentPhase.FAILED
+        assert finished.next_turn is None
+        assert len(llm.repo_contexts) == 2
+        assert "Execution attempt: 1/5" in llm.repo_contexts[0]
+        assert "Execution attempt: 2/5" in llm.repo_contexts[1]
+        assert "Repository tree:" in llm.repo_contexts[0]
+        assert "Requested file contents:" in llm.repo_contexts[1]
+        assert "File: src/menu.tsx" in llm.repo_contexts[1]
+        assert "linkWallet" not in (repo / "src" / "menu.tsx").read_text(encoding="utf-8")
+
+    asyncio.run(scenario())
+
+
+def test_live_flow_falls_back_to_repo_wide_context_when_scope_matches_no_files(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "src").mkdir()
+    (repo / "src" / "App.tsx").write_text("export default function App() { return null; }\n", encoding="utf-8")
+    (repo / "src" / "layout.tsx").write_text("export const Layout = () => null;\n", encoding="utf-8")
+    llm = LiveCapturesScopeFallbackLLM()
+    orchestrator = _orchestrator(tmp_path, llm_client=llm)
+
+    async def scenario():
+        agent = await orchestrator.create_repo_agent(str(repo))
+        started = await orchestrator.handle_user_message(
+            agent.repo_agent_id,
+            "update the dashboard page",
+        )
+        branch_answer = await orchestrator.submit_user_response(started.next_turn.id, "no")
+
+        turn = branch_answer.next_turn
+        while turn is not None and turn.type == TurnType.PLAN_STEP_REVIEW:
+            reviewed = await orchestrator.submit_user_response(turn.id, "yes")
+            turn = reviewed.next_turn
+
+        assert turn is not None
+        assert turn.type == TurnType.EXECUTION_APPROVAL
+
+        finished = await orchestrator.submit_user_response(turn.id, "yes")
+        assert finished.agent.phase == RepositoryAgentPhase.FAILED
+        assert len(llm.repo_contexts) == 1
+        assert "Scope fallback:" in llm.repo_contexts[0]
+        assert "- src/App.tsx" in llm.repo_contexts[0]
+        assert "Repository tree:" in llm.repo_contexts[0]
+        assert "- src/" in llm.repo_contexts[0]
+
+    asyncio.run(scenario())
+
+
+def test_live_flow_stops_after_five_internal_retries(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "src").mkdir()
+    for index in range(1, 6):
+        (repo / "src" / ("file%s.tsx" % index)).write_text(
+            "export const File%s = null;\n" % index,
+            encoding="utf-8",
+        )
+    llm = LiveRetriesUpToFiveLLM()
+    orchestrator = _orchestrator(tmp_path, llm_client=llm)
+
+    async def scenario():
+        agent = await orchestrator.create_repo_agent(str(repo))
+        started = await orchestrator.handle_user_message(
+            agent.repo_agent_id,
+            "update the homepage hero",
+        )
+        branch_answer = await orchestrator.submit_user_response(started.next_turn.id, "no")
+
+        turn = branch_answer.next_turn
+        while turn is not None and turn.type == TurnType.PLAN_STEP_REVIEW:
+            reviewed = await orchestrator.submit_user_response(turn.id, "yes")
+            turn = reviewed.next_turn
+
+        assert turn is not None
+        assert turn.type == TurnType.EXECUTION_APPROVAL
+
+        finished = await orchestrator.submit_user_response(turn.id, "yes")
+        assert finished.agent.phase == RepositoryAgentPhase.FAILED
+        assert llm.calls == 5
+        assert "Execution attempt: 5/5" in llm.repo_contexts[-1]
 
     asyncio.run(scenario())
 
