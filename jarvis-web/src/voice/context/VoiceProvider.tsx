@@ -10,7 +10,13 @@ import {
 } from 'react'
 import { useSpeechToText } from '../hooks/useSpeechToText.ts'
 import { useTextToSpeech } from '../hooks/useTextToSpeech.ts'
+import { useAudioPlayback } from '../hooks/useAudioPlayback.ts'
 import { appSocket } from '../services/socket.ts'
+import type {
+  AIResponseMessage,
+  ServerToClientMessage,
+  UserTranscriptMessage,
+} from '../types/protocol.ts'
 
 type VoiceContextValue = {
   listening: boolean
@@ -30,39 +36,6 @@ type VoiceProviderProps = {
   socket?: WebSocket
 }
 
-type SocketAIResponse = {
-  type?: string
-  responseText?: string
-  text?: string
-  payload?: string | { text?: string; responseText?: string }
-}
-
-function extractAIResponseText(message: SocketAIResponse): string {
-  if (typeof message.responseText === 'string') {
-    return message.responseText
-  }
-
-  if (typeof message.text === 'string') {
-    return message.text
-  }
-
-  if (typeof message.payload === 'string') {
-    return message.payload
-  }
-
-  if (typeof message.payload === 'object' && message.payload !== null) {
-    if (typeof message.payload.responseText === 'string') {
-      return message.payload.responseText
-    }
-
-    if (typeof message.payload.text === 'string') {
-      return message.payload.text
-    }
-  }
-
-  return ''
-}
-
 export function VoiceProvider({ children, socket = appSocket }: VoiceProviderProps) {
   const [transcript, setTranscript] = useState('')
   const [socketConnected, setSocketConnected] = useState(
@@ -72,6 +45,13 @@ export function VoiceProvider({ children, socket = appSocket }: VoiceProviderPro
   const loopbackMode = import.meta.env.VITE_VOICE_LOCAL_LOOPBACK === 'true'
 
   const { speak, stop, isSpeaking } = useTextToSpeech()
+  const {
+    unlock,
+    playFromUrl,
+    playFromBase64,
+    stop: stopAudio,
+    isPlaying: isAudioPlaying,
+  } = useAudioPlayback()
 
   useEffect(() => {
     const onOpen = () => setSocketConnected(true)
@@ -102,11 +82,13 @@ export function VoiceProvider({ children, socket = appSocket }: VoiceProviderPro
       }
 
       if (socket.readyState === WebSocket.OPEN) {
+        const message: UserTranscriptMessage = {
+          type: 'USER_TRANSCRIPT',
+          text: normalized,
+        }
+
         socket.send(
-          JSON.stringify({
-            type: 'USER_TRANSCRIPT',
-            text: normalized,
-          }),
+          JSON.stringify(message),
         )
       } else if (loopbackMode) {
         const simulatedText = `You said: ${normalized}`
@@ -139,11 +121,11 @@ export function VoiceProvider({ children, socket = appSocket }: VoiceProviderPro
   }, [liveTranscript])
 
   useEffect(() => {
-    const onMessage = (event: MessageEvent<string>) => {
-      let payload: SocketAIResponse
+    const onMessage = async (event: MessageEvent<string>) => {
+      let payload: ServerToClientMessage
 
       try {
-        payload = JSON.parse(event.data) as SocketAIResponse
+        payload = JSON.parse(event.data) as ServerToClientMessage
       } catch {
         return
       }
@@ -152,31 +134,51 @@ export function VoiceProvider({ children, socket = appSocket }: VoiceProviderPro
         return
       }
 
-      const responseText = extractAIResponseText(payload)
+      const message = payload as AIResponseMessage
+      const responseText = message.responseText?.trim()
       if (!responseText) {
         return
       }
 
-      void speak(responseText)
+      stop()
+
+      if (message.audioUrl) {
+        const played = await playFromUrl(message.audioUrl)
+        if (played) {
+          return
+        }
+      }
+
+      if (message.audioBase64) {
+        const played = await playFromBase64(message.audioBase64, message.audioMimeType)
+        if (played) {
+          return
+        }
+      }
+
+      await speak(responseText)
     }
 
     socket.addEventListener('message', onMessage)
     return () => {
       socket.removeEventListener('message', onMessage)
     }
-  }, [socket, speak])
+  }, [playFromBase64, playFromUrl, socket, speak, stop])
 
   const startListening = useCallback(() => {
-    if (isSpeaking) {
+    void unlock()
+
+    if (isSpeaking || isAudioPlaying) {
       stop()
+      stopAudio()
     }
     startSTT()
-  }, [isSpeaking, startSTT, stop])
+  }, [isAudioPlaying, isSpeaking, startSTT, stop, stopAudio, unlock])
 
   const value = useMemo<VoiceContextValue>(
     () => ({
       listening: isListening,
-      speaking: isSpeaking,
+      speaking: isSpeaking || isAudioPlaying,
       transcript,
       socketConnected,
       loopbackMode,
@@ -187,6 +189,7 @@ export function VoiceProvider({ children, socket = appSocket }: VoiceProviderPro
     [
       isListening,
       isSpeaking,
+      isAudioPlaying,
       transcript,
       socketConnected,
       loopbackMode,
