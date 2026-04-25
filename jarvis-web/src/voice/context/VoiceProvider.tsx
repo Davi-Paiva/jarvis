@@ -75,6 +75,9 @@ export function VoiceProvider({ children, socket = appSocket }: VoiceProviderPro
   const streamModeRef = useRef<'pcm' | 'accumulate' | null>(null)
   const streamResponseTextRef = useRef<string>('')
   const fallbackAccRef = useRef<FallbackAccumulator | null>(null)
+  const agentResponseTextRef = useRef<string>('')
+  const bargeInRecognitionRef = useRef<SpeechRecognition | null>(null)
+  const bargeInEnabledRef = useRef(false)
 
   const { speak, stop, isSpeaking } = useTextToSpeech()
   const {
@@ -123,11 +126,14 @@ export function VoiceProvider({ children, socket = appSocket }: VoiceProviderPro
         normalized === lastSentRef.current.text && now - lastSentRef.current.at < 1500
       if (duplicateSend) return false
 
+      agentResponseTextRef.current = ''
+
       if (socket.readyState === WebSocket.OPEN) {
         const message: UserTranscriptMessage = { type: 'USER_TRANSCRIPT', text: normalized }
         socket.send(JSON.stringify(message))
       } else if (loopbackMode) {
         const simulatedText = `You said: ${normalized}`
+        agentResponseTextRef.current = simulatedText
         setTimeout(() => { void speak(simulatedText) }, 300)
       } else {
         return false
@@ -152,6 +158,146 @@ export function VoiceProvider({ children, socket = appSocket }: VoiceProviderPro
     if (liveTranscript) setTranscript(liveTranscript)
   }, [liveTranscript])
 
+  const stopBargeInMonitor = useCallback(() => {
+    bargeInEnabledRef.current = false
+    const recognition = bargeInRecognitionRef.current
+    if (!recognition) {
+      return
+    }
+
+    bargeInRecognitionRef.current = null
+    try {
+      recognition.abort()
+    } catch {
+      // Ignore browser errors while stopping.
+    }
+  }, [])
+
+  const looksLikeAgentEcho = useCallback((spokenText: string) => {
+    const normalizedSpoken = spokenText
+      .toLowerCase()
+      .replace(/[^\w\s]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+    if (normalizedSpoken.length < 6) {
+      return false
+    }
+
+    const normalizedAgent = agentResponseTextRef.current
+      .toLowerCase()
+      .replace(/[^\w\s]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+    if (!normalizedAgent) {
+      return false
+    }
+
+    const spokenWords = normalizedSpoken.split(' ').filter((word) => word.length > 1)
+    if (spokenWords.length === 0) {
+      return false
+    }
+
+    const overlappingWords = spokenWords.filter((word) => normalizedAgent.includes(word)).length
+    return overlappingWords >= Math.max(2, Math.ceil(spokenWords.length * 0.7))
+  }, [])
+
+  const handleBargeInDetected = useCallback(
+    (spokenText: string) => {
+      if (!bargeInEnabledRef.current || looksLikeAgentEcho(spokenText)) {
+        return
+      }
+
+      stopBargeInMonitor()
+      stop()
+      stopAudio()
+      cleanupStream()
+      startSTT()
+    },
+    [cleanupStream, looksLikeAgentEcho, startSTT, stop, stopAudio, stopBargeInMonitor],
+  )
+
+  const startBargeInMonitor = useCallback(() => {
+    if (bargeInRecognitionRef.current || isListening) {
+      return
+    }
+
+    const SpeechRecognitionCtor =
+      window.SpeechRecognition ?? window.webkitSpeechRecognition
+    if (!SpeechRecognitionCtor) {
+      return
+    }
+
+    const recognition = new SpeechRecognitionCtor()
+    recognition.continuous = true
+    recognition.interimResults = true
+    recognition.lang = 'en-US'
+    bargeInEnabledRef.current = true
+
+    recognition.onresult = (event: SpeechRecognitionEvent) => {
+      if (!bargeInEnabledRef.current) {
+        return
+      }
+
+      let heardText = ''
+      for (let i = event.resultIndex; i < event.results.length; i += 1) {
+        heardText += event.results[i][0]?.transcript ?? ''
+      }
+
+      const normalized = heardText.trim()
+      const resultCount = event.results.length
+      const latestResult = resultCount > 0 ? event.results[resultCount - 1] : null
+      const isFinalResult = latestResult?.isFinal ?? false
+
+      // Avoid interrupting on tiny interim snippets caused by noise/echo.
+      const shouldInterrupt = isFinalResult ? normalized.length >= 2 : normalized.length >= 8
+      if (shouldInterrupt) {
+        handleBargeInDetected(normalized)
+      }
+    }
+
+    recognition.onerror = () => {
+      // Allow onend to restart while the agent is still speaking.
+    }
+
+    recognition.onend = () => {
+      if (!bargeInEnabledRef.current) {
+        bargeInRecognitionRef.current = null
+        return
+      }
+
+      if (!isSpeaking && !isAudioPlaying) {
+        bargeInEnabledRef.current = false
+        bargeInRecognitionRef.current = null
+        return
+      }
+
+      try {
+        recognition.start()
+      } catch {
+        bargeInEnabledRef.current = false
+        bargeInRecognitionRef.current = null
+      }
+    }
+
+    bargeInRecognitionRef.current = recognition
+    try {
+      recognition.start()
+    } catch {
+      bargeInEnabledRef.current = false
+      bargeInRecognitionRef.current = null
+    }
+  }, [handleBargeInDetected, isAudioPlaying, isListening, isSpeaking])
+
+  useEffect(() => {
+    const agentIsSpeaking = isSpeaking || isAudioPlaying
+    if (agentIsSpeaking && !isListening) {
+      startBargeInMonitor()
+      return
+    }
+
+    stopBargeInMonitor()
+  }, [isAudioPlaying, isListening, isSpeaking, startBargeInMonitor, stopBargeInMonitor])
+
   // ── WebSocket message handler ─────────────────────────────────────────────
   useEffect(() => {
     const onMessage = async (event: MessageEvent<string>) => {
@@ -169,6 +315,8 @@ export function VoiceProvider({ children, socket = appSocket }: VoiceProviderPro
         const message = payload as AIResponseMessage
         const responseText = message.responseText?.trim()
         if (!responseText) return
+
+        agentResponseTextRef.current = responseText
 
         cleanupStream()
         stop()
@@ -196,6 +344,7 @@ export function VoiceProvider({ children, socket = appSocket }: VoiceProviderPro
         stop()           // stop any browser TTS
 
         streamResponseTextRef.current = msg.responseText ?? ''
+        agentResponseTextRef.current = msg.responseText ?? ''
 
         if (msg.encoding === 'pcm16le' && msg.sampleRate) {
           streamModeRef.current = 'pcm'
@@ -271,12 +420,17 @@ export function VoiceProvider({ children, socket = appSocket }: VoiceProviderPro
 
     // Barge-in: stop any ongoing playback and discard the current stream.
     if (isSpeaking || isAudioPlaying) {
+      stopBargeInMonitor()
       stop()
       stopAudio()
     }
     cleanupStream()
     startSTT()
-  }, [cleanupStream, isAudioPlaying, isSpeaking, startSTT, stop, stopAudio, unlock])
+  }, [cleanupStream, isAudioPlaying, isSpeaking, startSTT, stop, stopAudio, stopBargeInMonitor, unlock])
+
+  useEffect(() => () => {
+    stopBargeInMonitor()
+  }, [stopBargeInMonitor])
 
   const value = useMemo<VoiceContextValue>(
     () => ({
