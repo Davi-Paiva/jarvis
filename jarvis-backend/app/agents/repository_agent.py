@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from pathlib import Path
 from typing import Any, List, Optional
 
 from app.agents.task_agent import TaskAgent
@@ -77,8 +78,8 @@ class RepositoryAgent:
                 type=TurnType.APPROVAL,
                 priority=60,
                 message=(
-                    "Plan ready for `%s`.\n\n%s\n\nApprove this plan to start execution?"
-                    % (self.state.repo_path, self.state.plan or "")
+                    "Plan ready for the project. %s Approve this plan to start execution?"
+                    % (self.state.plan or "")
                 ),
                 context="RepositoryAgent is waiting for plan approval.",
                 requires_user_response=True,
@@ -373,6 +374,26 @@ class RepositoryAgent:
 
     async def _handle_branch_permission_response(self, text: str) -> RepositoryAgentState:
         if _looks_like_yes(text):
+            # Try to extract branch name from the response first
+            extracted_name = _extract_branch_name_from_text(text)
+            
+            if extracted_name:
+                # User provided the branch name in their response
+                self.state.branch_decision = "create_new"
+                self.state.requested_branch_name = extracted_name
+                self.state.phase = RepositoryAgentPhase.BRANCH_CONFIRMATION
+                self.registry.save_agent_state(self.state)
+                self._enqueue_turn(
+                    turn_type=TurnType.BRANCH_CONFIRMATION,
+                    priority=80,
+                    message=f"I'm going to create the branch {extracted_name}. Is that correct?",
+                    context="RepositoryAgent is confirming the transcribed branch name before creating it.",
+                    requires_user_response=True,
+                    metadata={"branch_name": extracted_name},
+                )
+                return self.state
+            
+            # No branch name found, ask for it
             self.state.branch_decision = "create_new"
             self.state.phase = RepositoryAgentPhase.BRANCH_NAME
             self.registry.save_agent_state(self.state)
@@ -570,9 +591,16 @@ class RepositoryAgent:
 
         if plan_steps:
             first_step = plan_steps[0]
+            scope_info = (
+                f" This will primarily work with {_format_files_for_voice(first_step['scope'])}."
+                if first_step.get('scope')
+                else ""
+            )
             message = (
-                f"Step 1: {first_step['title']}. {first_step['description']}. "
-                "Does this look good, or would you like to change this step?"
+                f"Let me walk you through the plan step by step. "
+                f"Step 1 would be to {first_step['title']}. "
+                f"{first_step['description']}{scope_info} "
+                f"What do you think? Feel free to ask questions, request changes, or say approve to proceed."
             )
             self._enqueue_turn(
                 turn_type=TurnType.PLAN_STEP_REVIEW,
@@ -611,9 +639,16 @@ class RepositoryAgent:
             if self.state.current_plan_step_index < len(self.state.plan_steps):
                 next_step = self.state.plan_steps[self.state.current_plan_step_index]
                 step_num = self.state.current_plan_step_index + 1
+                scope_info = (
+                    f" This will primarily work with {_format_files_for_voice(next_step['scope'])}."
+                    if next_step.get('scope')
+                    else ""
+                )
                 message = (
-                    f"Step {step_num}: {next_step['title']}. {next_step['description']}. "
-                    "Does this look good, or would you like to change this step?"
+                    f"Great! Moving on to the next step. "
+                    f"Step {step_num} would be to {next_step['title']}. "
+                    f"{next_step['description']}{scope_info} "
+                    f"What do you think about this step? Ask any questions, or say approve to continue."
                 )
                 self._enqueue_turn(
                     turn_type=TurnType.PLAN_STEP_REVIEW,
@@ -637,59 +672,110 @@ class RepositoryAgent:
                 )
             return self.state
         else:
+            # Non-approval response: classify intent (question vs revision)
             if step_index < len(self.state.plan_steps):
-                self.state.plan_steps[step_index]["user_feedback"].append(text)
                 current_step = TaskPlanItem(
                     title=self.state.plan_steps[step_index].get("title", "Task"),
                     description=self.state.plan_steps[step_index].get("description", ""),
                     scope=self.state.plan_steps[step_index].get("scope", []),
                 )
+                
+                # Classify user intent
+                try:
+                    intent = await self.llm_client.classify_user_intent(text, current_step)
+                except Exception:
+                    # Fallback: assume question if classification fails
+                    intent = "QUESTION"
+                
                 repo_context = self._build_repo_context()
                 memory_context = self.memory_service.render_memory_for_llm(
                     self.state.repo_agent_id
                 ).text
-                try:
-                    revised_step = await self.llm_client.revise_plan_step(
-                        state=self.state,
-                        current_step=current_step,
-                        user_feedback=text,
-                        repo_context=repo_context,
-                        memory_context=memory_context,
+                
+                if intent == "QUESTION":
+                    # Handle as conversational discussion - no revision
+                    try:
+                        discussion_response = await self.llm_client.discuss_plan_step(
+                            state=self.state,
+                            current_step=current_step,
+                            user_question=text,
+                            repo_context=repo_context,
+                            memory_context=memory_context,
+                        )
+                    except Exception as exc:
+                        # Fallback response if LLM fails
+                        discussion_response = (
+                            f"Let me clarify this step for you. "
+                            f"This is about {current_step.title}. "
+                            f"{current_step.description} "
+                            f"This step will work with {_format_files_for_voice(current_step.scope) if current_step.scope else 'general codebase changes'}. "
+                            f"Feel free to ask more questions, or say approve when ready to proceed."
+                        )
+                    
+                    step_num = step_index + 1
+                    # Enqueue discussion message without changing the step
+                    self._enqueue_turn(
+                        turn_type=TurnType.PLAN_STEP_REVIEW,
+                        priority=70,
+                        message=discussion_response,
+                        context=f"RepositoryAgent is discussing step {step_num} with the user.",
+                        requires_user_response=True,
+                        metadata={"step_index": step_index},
                     )
-                    if not isinstance(revised_step, TaskPlanItem):
-                        revised_step = TaskPlanItem.model_validate(revised_step)
-                except Exception as exc:
-                    return self._fail_planning_step(
-                        user_message=(
-                            "I couldn't revise that plan step because the generated planning output "
-                            "was not usable. Please try again."
-                        ),
-                        context="RepositoryAgent failed while revising a plan step.",
-                        exc=exc,
+                    self.registry.save_agent_state(self.state)
+                    return self.state
+                else:
+                    # Handle as revision request
+                    self.state.plan_steps[step_index]["user_feedback"].append(text)
+                    try:
+                        revised_step = await self.llm_client.revise_plan_step(
+                            state=self.state,
+                            current_step=current_step,
+                            user_feedback=text,
+                            repo_context=repo_context,
+                            memory_context=memory_context,
+                        )
+                        if not isinstance(revised_step, TaskPlanItem):
+                            revised_step = TaskPlanItem.model_validate(revised_step)
+                    except Exception as exc:
+                        return self._fail_planning_step(
+                            user_message=(
+                                "I couldn't revise that plan step because the generated planning output "
+                                "was not usable. Please try again."
+                            ),
+                            context="RepositoryAgent failed while revising a plan step.",
+                            exc=exc,
+                        )
+                    self.state.plan_steps[step_index]["title"] = revised_step.title
+                    self.state.plan_steps[step_index]["description"] = revised_step.description
+                    self.state.plan_steps[step_index]["scope"] = revised_step.scope
+                    self.state.plan_steps[step_index]["status"] = "PROPOSED"
+                    
+                    self.registry.save_agent_state(self.state)
+                    
+                    step_num = step_index + 1
+                    scope_text = f" The scope includes {_format_files_for_voice(revised_step.scope)}" if revised_step.scope else ""
+                    message = (
+                        f"I've updated step {step_num} based on your feedback. "
+                        f"The revised step {step_num} is to {revised_step.title}. "
+                        f"{revised_step.description}{scope_text}. "
+                        f"The changes incorporate your request to {text}. "
+                        f"Does this revised approach work for you? Feel free to ask questions or request further changes, "
+                        f"or say approve to proceed."
                     )
-                self.state.plan_steps[step_index]["title"] = revised_step.title
-                self.state.plan_steps[step_index]["description"] = revised_step.description
-                self.state.plan_steps[step_index]["scope"] = revised_step.scope
-                self.state.plan_steps[step_index]["status"] = "PROPOSED"
+                    self._enqueue_turn(
+                        turn_type=TurnType.PLAN_STEP_REVIEW,
+                        priority=70,
+                        message=message,
+                        context="RepositoryAgent is asking the user to review the updated plan step.",
+                        requires_user_response=True,
+                        metadata={"step_index": step_index},
+                    )
+                    self.state.phase = RepositoryAgentPhase.PLAN_STEP_REVIEW
+                    self.registry.save_agent_state(self.state)
+                    return self.state
             
-            self.registry.save_agent_state(self.state)
-            
-            step = self.state.plan_steps[step_index] if step_index < len(self.state.plan_steps) else {}
-            step_num = step_index + 1
-            message = (
-                f"I revised step {step_num} based on your feedback. "
-                f"Step {step_num}: {step.get('title', 'N/A')}. {step.get('description', 'N/A')}. "
-                "Please approve this revised step or tell me what to change."
-            )
-            self._enqueue_turn(
-                turn_type=TurnType.PLAN_STEP_REVIEW,
-                priority=70,
-                message=message,
-                context="RepositoryAgent is asking the user to review the updated plan step.",
-                requires_user_response=True,
-                metadata={"step_index": step_index},
-            )
-            self.state.phase = RepositoryAgentPhase.PLAN_STEP_REVIEW
+            # Fallback if step_index is invalid
             self.registry.save_agent_state(self.state)
             return self.state
 
@@ -879,6 +965,123 @@ def _looks_like_no(text: str) -> bool:
         "usa la actual",
     }
     return normalized in negatives or any(item in normalized for item in negatives if len(item) > 3)
+
+
+def _extract_branch_name_from_text(text: str) -> str:
+    """Extract branch name from phrases like 'create a branch called photobooth' or 'branch name is feature-x'."""
+    lower_text = text.lower().strip()
+    
+    # Patterns to match branch name extraction
+    patterns = [
+        r"branch called ([\w-]+)",
+        r"branch named ([\w-]+)",
+        r"call it ([\w-]+)",
+        r"name it ([\w-]+)",
+        r"called ([\w-]+)",
+        r"named ([\w-]+)",
+        r"branch name is ([\w-]+)",
+        r"branch name ([\w-]+)",
+        r"create ([\w-]+) branch",
+        r"make ([\w-]+) branch",
+        r"rama llamada ([\w-]+)",
+        r"rama ([\w-]+)",
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, lower_text)
+        if match:
+            candidate = match.group(1)
+            # Don't return common words that aren't branch names
+            if candidate not in {"a", "the", "new", "it", "one", "branch"}:
+                return _normalize_branch_name(candidate)
+    
+    return ""
+
+
+def _format_files_for_voice(file_paths: List[str]) -> str:
+    """Convert file paths to natural voice-friendly descriptions.
+    
+    Examples:
+        ['app/services/openai_client.py'] -> 'the openai client file in the services folder'
+        ['app/agents/repo.py', 'app/models/task.py'] -> 'the repo file in agents and the task file in models'
+        ['*.py'] -> 'Python files'
+    """
+    if not file_paths:
+        return "the codebase"
+    
+    descriptions = []
+    for path in file_paths[:5]:  # Limit to first 5 for voice brevity
+        # Skip empty or meaningless patterns
+        if not path or path in ['*', '**', '.']:
+            continue
+            
+        # Clean up path by removing ** and * for analysis
+        clean_path = path.replace('**/', '').replace('/**', '').replace('**', '')
+        path_obj = Path(clean_path)
+        
+        # Handle wildcards
+        if '*' in path:
+            # Determine file type from extension
+            if '*.py' in path:
+                file_type = "Python files"
+            elif '*.ts' in path or '*.tsx' in path:
+                file_type = "TypeScript files"
+            elif '*.js' in path or '*.jsx' in path:
+                file_type = "JavaScript files"
+            else:
+                file_type = "files"
+            
+            # Extract meaningful folder from the pattern
+            # e.g., "app/services/**/*.py" -> "services"
+            parts = [p for p in clean_path.split('/') if p and p != '.' and not p.startswith('*')]
+            if parts:
+                # Get the most specific (last) folder mentioned
+                folder_name = parts[-1] if parts[-1] else parts[0] if len(parts) > 0 else None
+                if folder_name:
+                    descriptions.append(f"{file_type} in the {folder_name} folder")
+                else:
+                    descriptions.append(file_type)
+            else:
+                descriptions.append(file_type)
+            continue
+        
+        # Regular file path
+        filename = path_obj.stem  # Without extension
+        parent = path_obj.parent
+        
+        # Skip if we couldn't extract a meaningful name
+        if not filename or filename in ['*', '**']:
+            continue
+        
+        # Clean up filename for speech (remove underscores, make readable)
+        clean_name = filename.replace('_', ' ').replace('-', ' ')
+        
+        # Build natural description
+        if parent and str(parent) not in ['.', '', '**']:
+            folder_name = parent.name
+            # Don't use ** as a folder name
+            if folder_name and folder_name not in ['**', '*', '.']:
+                descriptions.append(f"the {clean_name} file in {folder_name}")
+            else:
+                descriptions.append(f"the {clean_name} file")
+        else:
+            descriptions.append(f"the {clean_name} file")
+    
+    # If we filtered everything out, return generic
+    if not descriptions:
+        return "various files in the codebase"
+    
+    # Handle cases with many files
+    if len(file_paths) > 5:
+        descriptions.append(f"and {len(file_paths) - 5} other files")
+    
+    # Join naturally
+    if len(descriptions) == 1:
+        return descriptions[0]
+    elif len(descriptions) == 2:
+        return f"{descriptions[0]} and {descriptions[1]}"
+    else:
+        return ", ".join(descriptions[:-1]) + f", and {descriptions[-1]}"
 
 
 def _normalize_branch_name(text: str) -> str:

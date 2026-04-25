@@ -72,6 +72,25 @@ class LLMClient:
     ) -> List[TaskPlanItem]:
         raise NotImplementedError
 
+    async def classify_user_intent(
+        self,
+        user_message: str,
+        current_step: TaskPlanItem,
+    ) -> str:
+        """Classify if user intent is 'QUESTION' or 'REVISION'."""
+        raise NotImplementedError
+
+    async def discuss_plan_step(
+        self,
+        state: RepositoryAgentState,
+        current_step: TaskPlanItem,
+        user_question: str,
+        repo_context: str,
+        memory_context: str,
+    ) -> str:
+        """Answer user questions about a plan step conversationally."""
+        raise NotImplementedError
+
     async def revise_plan_step(
         self,
         state: RepositoryAgentState,
@@ -175,6 +194,67 @@ class FakeLLMClient(LLMClient):
             ),
         ]
 
+    async def classify_user_intent(
+        self,
+        user_message: str,
+        current_step: TaskPlanItem,
+    ) -> str:
+        """Classify if user intent is 'QUESTION' or 'REVISION'."""
+        # Simple heuristic classification for demo mode
+        question_indicators = [
+            "what", "why", "how", "which", "when", "where", "who",
+            "explain", "tell me", "can you", "could you", "would you",
+            "?", "clarify", "understand", "mean", "about"
+        ]
+        revision_indicators = [
+            "change", "modify", "update", "use", "instead", "add", "remove",
+            "replace", "don't", "shouldn't", "should", "need to", "make it"
+        ]
+        
+        lower_msg = user_message.lower()
+        has_question = any(indicator in lower_msg for indicator in question_indicators)
+        has_revision = any(indicator in lower_msg for indicator in revision_indicators)
+        
+        if has_question and not has_revision:
+            return "QUESTION"
+        if has_revision:
+            return "REVISION"
+        # Default to question for ambiguous cases to encourage discussion
+        return "QUESTION"
+
+    async def discuss_plan_step(
+        self,
+        state: RepositoryAgentState,
+        current_step: TaskPlanItem,
+        user_question: str,
+        repo_context: str,
+        memory_context: str,
+    ) -> str:
+        """Answer user questions about a plan step conversationally."""
+        # Helper to format file paths for voice
+        from pathlib import Path
+        
+        def format_files(paths):
+            if not paths:
+                return "general codebase changes"
+            if len(paths) == 1:
+                p = Path(paths[0])
+                name = p.stem.replace('_', ' ').replace('-', ' ')
+                folder = p.parent.name if p.parent and str(p.parent) != '.' else None
+                return f"the {name} file" + (f" in the {folder} folder" if folder else "")
+            return "several files across the codebase"
+        
+        return (
+            f"Let me explain this step in more detail. "
+            f"This is about {current_step.title}. "
+            f"This step involves: {current_step.description} "
+            f"The scope includes working with {format_files(current_step.scope)}. "
+            f"In the context of your question about {user_question}, "
+            f"this is important because it helps us achieve the overall goal of {state.task_goal}. "
+            f"The changes will be localized and focused on maintaining code quality while implementing the requested functionality. "
+            f"Does this answer your question? Feel free to ask more, or say approve if you're ready to move forward."
+        )
+
     async def revise_plan_step(
         self,
         state: RepositoryAgentState,
@@ -212,17 +292,27 @@ class FakeLLMClient(LLMClient):
         task_states: List[TaskAgentState],
     ) -> str:
         completed = [task for task in task_states if task.result_summary]
+        
+        # Format changed files naturally
+        if repo_state.changed_files:
+            from pathlib import Path
+            file_desc = []
+            for f in repo_state.changed_files[:3]:
+                p = Path(f)
+                name = p.stem.replace('_', ' ').replace('-', ' ')
+                file_desc.append(f"the {name} file")
+            if len(repo_state.changed_files) > 3:
+                file_desc.append(f"and {len(repo_state.changed_files) - 3} others")
+            files_text = ", ".join(file_desc) if file_desc else "none"
+        else:
+            files_text = "none"
+        
         return (
-            "Task finished for `%s`.\n\n"
-            "- Subtasks completed: %s\n"
-            "- Changed files: %s\n"
-            "- Tests: %s\n"
-            "- Execution mode: offline demo (no live patch generation)"
-        ) % (
-            repo_state.repo_path,
-            len(completed),
-            ", ".join(repo_state.changed_files) or "none",
-            ", ".join(repo_state.test_results) or "not run",
+            f"Task finished for the project. "
+            f"Subtasks completed: {len(completed)}. "
+            f"Changed files: {files_text}. "
+            f"Tests: {', '.join(repo_state.test_results) or 'not run'}. "
+            f"Execution mode: offline demo, no live patch generation."
         )
 
 
@@ -287,9 +377,29 @@ class OpenAIAgentsClient(FakeLLMClient):
     ) -> str:
         self._require_live_agent()
         prompt = (
-            "Create a concise implementation plan. Do not include auth or production-only work.\n"
-            "State: %s\nRepo context:\n%s\nMemory:\n%s"
-        ) % (state.model_dump(mode="json"), repo_context, memory_context)
+            "Create a detailed, conversational implementation plan in natural spoken language.\n\n"
+            "IMPORTANT: DO NOT use markdown formatting - no asterisks, no bold, no headers.\n"
+            "Write naturally for voice output as if explaining to a colleague.\n\n"
+            "GUIDELINES:\n"
+            "- Write 2-4 paragraphs explaining the overall approach\n"
+            "- When mentioning files, describe them naturally like a coworker would\n"
+            "- For example, say 'the client file in the services folder' not 'services/client.py'\n"
+            "- Mention specific relevant modules or components that will be involved\n"
+            "- Explain the high-level strategy and why this approach makes sense\n"
+            "- Use conversational, friendly tone\n"
+            "- Focus on the what and why, not detailed code\n"
+            "- Do not include auth or production-only work unless specifically requested\n\n"
+            "Task goal: %s\n"
+            "Requirements: %s\n\n"
+            "Repository context:\n%s\n\n"
+            "Memory context:\n%s\n\n"
+            "Provide a conversational plan explanation:"
+        ) % (
+            state.task_goal,
+            state.requirements,
+            repo_context,
+            memory_context,
+        )
         return await self._run_agent("Repository planning agent", prompt)
 
     async def split_tasks(
@@ -300,22 +410,104 @@ class OpenAIAgentsClient(FakeLLMClient):
         self._require_live_agent()
         prompt = (
             "Turn this implementation request into 2 to 5 concrete reviewable steps as a JSON array.\n"
-            "Each item must have title, description, and scope.\n"
-            "Requirements:\n"
-            "- Do not just paraphrase the user's request.\n"
-            "- Do not quote or copy the user's original prompt verbatim in any step description.\n"
-            "- Make each step specific to repository work.\n"
-            "- Separate inspection/design work from implementation and validation.\n"
-            "- Keep descriptions concise but actionable.\n"
-            "State: %s\n"
-            "Plan:\n%s"
-        ) % (state.model_dump(mode="json"), plan)
+            "Each item must have title, description, and scope.\n\n"
+            "IMPORTANT REQUIREMENTS:\n"
+            "- Do not just paraphrase the user's request\n"
+            "- Do not quote or copy the user's original prompt verbatim in any step description\n"
+            "- Make each step specific to repository work\n"
+            "- Separate inspection/design work from implementation and validation\n"
+            "- Make descriptions conversational and detailed, but NO markdown formatting\n"
+            "- Write titles and descriptions for natural voice output\n"
+            "- When mentioning files in descriptions, use natural language\n"
+            "- For example, say 'the client file in the services folder' not 'services/client.py'\n"
+            "- Explain what will be changed and why in plain language\n"
+            "- In the 'scope' array, include actual file paths or patterns for technical processing\n\n"
+            "Task goal: %s\n"
+            "Requirements: %s\n"
+            "Plan text:\n%s\n\n"
+            "Return a JSON array of step objects with conversational descriptions:"
+        ) % (state.task_goal, state.requirements, plan)
         parsed = await self._run_json_agent(
             "Task splitter agent",
             prompt,
             "Return a JSON array of step objects.",
         )
         return _normalize_task_plan_items(parsed)
+
+    async def classify_user_intent(
+        self,
+        user_message: str,
+        current_step: TaskPlanItem,
+    ) -> str:
+        """Classify if user intent is 'QUESTION' or 'REVISION'."""
+        self._require_live_agent()
+        prompt = (
+            "Classify the user's intent as either 'QUESTION' or 'REVISION'.\n\n"
+            "QUESTION: User is asking for clarification, explanation, or more details about the plan step. "
+            "Examples: 'What files will this change?', 'Why do we need this step?', 'How does this work?', "
+            "'Can you explain the approach?', 'What are the implications?'\n\n"
+            "REVISION: User wants to change, modify, or update the plan step. "
+            "Examples: 'Change this to use Redis', 'Add error handling', 'Use a different approach', "
+            "'Don't modify that file', 'Instead, let's do X'\n\n"
+            "Current step being discussed:\n"
+            "Title: %s\n"
+            "Description: %s\n\n"
+            "User message: %s\n\n"
+            "Return only one word: QUESTION or REVISION"
+        ) % (current_step.title, current_step.description, user_message)
+        result = await self._run_agent("Intent classification agent", prompt)
+        normalized = result.strip().upper()
+        if "QUESTION" in normalized:
+            return "QUESTION"
+        if "REVISION" in normalized:
+            return "REVISION"
+        # Default to question to encourage discussion
+        return "QUESTION"
+
+    async def discuss_plan_step(
+        self,
+        state: RepositoryAgentState,
+        current_step: TaskPlanItem,
+        user_question: str,
+        repo_context: str,
+        memory_context: str,
+    ) -> str:
+        """Answer user questions about a plan step conversationally."""
+        self._require_live_agent()
+        prompt = (
+            "You are a helpful coding assistant discussing an implementation plan with a developer. "
+            "Answer their question conversationally with detailed explanations.\n\n"
+            "IMPORTANT GUIDELINES:\n"
+            "- Provide 2-4 paragraph responses with good depth\n"
+            "- Explain the high-level approach and reasoning\n"
+            "- Mention specific relevant modules, files, or components that will be affected\n"
+            "- Explain WHY this approach was chosen and what it accomplishes\n"
+            "- Use conversational, friendly tone\n"
+            "- Don't say 'I revised' - this is just discussion, no changes yet\n"
+            "- DO NOT use markdown formatting - no asterisks, no bold, no headers\n"
+            "- Write naturally for voice output - avoid special characters and formatting\n"
+            "- When mentioning file paths, describe them naturally like a coworker would\n"
+            "- For example, say 'the client file in the services folder' not 'services/client.py'\n"
+            "- End by asking if they have more questions or are ready to approve\n\n"
+            "Current plan step being discussed:\n"
+            "Title: %s\n"
+            "Description: %s\n"
+            "Scope: %s\n\n"
+            "Overall task goal: %s\n\n"
+            "User's question: %s\n\n"
+            "Repository context (files available):\n%s\n\n"
+            "Memory context:\n%s\n\n"
+            "Provide a detailed, conversational response without any markdown:"
+        ) % (
+            current_step.title,
+            current_step.description,
+            ', '.join(current_step.scope) if current_step.scope else 'general codebase',
+            state.task_goal,
+            user_question,
+            repo_context[:1000],  # Limit context size
+            memory_context[:500],
+        )
+        return await self._run_agent("Plan discussion agent", prompt)
 
     async def revise_plan_step(
         self,
@@ -331,6 +523,7 @@ class OpenAIAgentsClient(FakeLLMClient):
             "with title, description, and scope.\n"
             "Keep the step reviewable and specific.\n"
             "Do not quote the user's original task verbatim.\n"
+            "Make the description detailed and conversational (2-3 sentences explaining the approach).\n"
             "Current step: %s\n"
             "User feedback: %s\n"
             "Repo context:\n%s\n"
@@ -383,7 +576,13 @@ class OpenAIAgentsClient(FakeLLMClient):
     ) -> str:
         self._require_live_agent()
         prompt = (
-            "Create a concise final report for the user.\nState: %s\nTasks: %s"
+            "Create a concise final report for the user in natural spoken language.\\n"
+            "DO NOT use markdown formatting - no asterisks, no bold, no headers, no bullet points.\\n"
+            "Write naturally for voice output. Use complete sentences.\\n"
+            "When mentioning file paths, describe them naturally like a coworker would.\\n"
+            "For example, say 'the client file in the services folder' not 'services/client.py'.\\n"
+            "Summarize what was done, which files were changed, and test results.\\n"
+            "State: %s\\nTasks: %s"
         ) % (
             repo_state.model_dump(mode="json"),
             [task.model_dump(mode="json") for task in task_states],

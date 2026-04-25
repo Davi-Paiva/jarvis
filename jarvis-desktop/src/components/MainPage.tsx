@@ -303,13 +303,7 @@ function MainPage({ initialFolder, initialRepoAgentId }: MainPageProps) {
           </div>
         </div>
 
-        {selectedPendingTurn ? (
-          <div className="pending-turn-banner">
-            <strong>{selectedPendingTurn.type}</strong>
-            <span>{selectedPendingTurn.message}</span>
-          </div>
-        ) : null}
-
+      
         <div className="messages-container">
           {visibleMessages.map((message) => (
             <div
