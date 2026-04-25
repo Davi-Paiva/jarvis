@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import List, Optional
+import asyncio
+from typing import List, Optional, Tuple
 
 from app.models.events import ManagerEvent, ManagerEventType
 from app.models.turns import TurnRequest, TurnResponse
@@ -14,6 +15,7 @@ class GlobalManager:
     def __init__(self, scheduler: TurnScheduler, persistence: SQLitePersistence) -> None:
         self.scheduler = scheduler
         self.persistence = persistence
+        self._listeners: List[Tuple[asyncio.AbstractEventLoop, asyncio.Queue]] = []
 
     def acquire_intake_lock(self, repo_agent_id: str) -> None:
         self.scheduler.acquire_intake_lock(repo_agent_id)
@@ -43,6 +45,19 @@ class GlobalManager:
 
     def get_next_turn(self, user_id: str = "demo") -> Optional[TurnRequest]:
         return self.scheduler.next_turn(user_id=user_id)
+
+    def list_pending_turns(self, user_id: str = "demo") -> List[TurnRequest]:
+        turns = [turn for turn in self.persistence.list_turns(user_id=user_id) if not turn.handled]
+        return sorted(turns, key=lambda turn: (-turn.priority, turn.created_at))
+
+    def register_listener(self) -> asyncio.Queue:
+        queue: asyncio.Queue = asyncio.Queue()
+        loop = asyncio.get_running_loop()
+        self._listeners.append((loop, queue))
+        return queue
+
+    def unregister_listener(self, queue: asyncio.Queue) -> None:
+        self._listeners = [item for item in self._listeners if item[1] is not queue]
 
     def record_user_response(
         self,
@@ -93,8 +108,22 @@ class GlobalManager:
 
     def emit_event(self, event: ManagerEvent) -> ManagerEvent:
         self.persistence.save_event(event)
+        try:
+            current_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            current_loop = None
+
+        for loop, listener in list(self._listeners):
+            if loop.is_closed():
+                continue
+            try:
+                if current_loop is loop:
+                    listener.put_nowait(event)
+                else:
+                    loop.call_soon_threadsafe(listener.put_nowait, event)
+            except Exception:
+                continue
         return event
 
     def list_events(self) -> List[ManagerEvent]:
         return self.persistence.list_events()
-

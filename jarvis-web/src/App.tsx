@@ -1,17 +1,23 @@
 import { useJarvisSession } from './app/useJarvisSession';
-import { PairingPage } from './features/connection/PairingPage';
+import { ConnectionScreen } from './features/connection/ConnectionScreen';
 import { CallScreen } from './features/call/CallScreen';
-// import { ApprovalModal } from './features/approvals/ApprovalModal';
+import { ApprovalModal } from './features/approvals/ApprovalModal';
 import './App.css';
 
 function App() {
   const session = useJarvisSession();
 
-  if (session.connectionState === 'disconnected') {
-    return <PairingPage onConnect={session.connect} />;
+  if (session.connectionState !== 'connected') {
+    return (
+      <ConnectionScreen
+        onConnect={session.connect}
+        socketConnected={session.socketConnected}
+        connecting={session.connectionState === 'connecting'}
+      />
+    );
   }
 
-  // const pendingApproval = session.approvals[0] ?? null;
+  const pendingApproval = session.approvals[0] ?? null;
 
   return (
     <>
@@ -25,7 +31,13 @@ function App() {
         getVolume={session.getVolume}
         onSendMessage={session.sendMessage}
       />
-      {/* pendingApproval && <ApprovalModal approval={pendingApproval} /> */}
+      {pendingApproval && (
+        <ApprovalModal
+          approval={pendingApproval}
+          onApprove={session.approveAction}
+          onReject={session.rejectAction}
+        />
+      )}
     </>
   );
 }

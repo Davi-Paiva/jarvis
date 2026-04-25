@@ -137,6 +137,40 @@ Status codes:
 - `400` if the path does not exist or is not a directory.
 - `403` if the path is outside `JARVIS_ALLOWED_REPO_ROOTS`.
 
+## Voice Websocket
+
+`jarvis-web` now connects directly to `WS /ws` on the backend. The websocket is
+the voice/session transport for local development and does not pass through the
+desktop app.
+
+Client messages:
+
+- `SESSION_START`: creates or resumes a local voice session.
+- `USER_TRANSCRIPT`: sends a spoken utterance with optional `sessionId`,
+  `repoAgentId` and `turnId`.
+
+Server messages:
+
+- `SESSION_STATE`: current voice session state, active repo, active chat,
+  active repo summary, pending turns and active chat history.
+- `CHAT_MESSAGE`: persisted user/assistant/system message from the active chat.
+- `AI_RESPONSE`: short spoken response for TTS playback, optionally including
+  pre-synthesized audio from ElevenLabs.
+- `PENDING_TURN`: summary of a pending approval or blocking question.
+
+The backend uses `VoiceSessionService` as the adapter between websocket traffic
+and `JarvisOrchestrator`. It handles:
+
+- active repository switching by voice
+- one active chat per repository
+- repository activation by name inside `JARVIS_ALLOWED_REPO_ROOTS`
+- approval routing to `submit_user_response(...)`
+- cross-repo pending-turn notifications with "switch repo?" confirmation
+
+`GlobalManager` also keeps in-memory realtime listeners so websocket sessions
+receive approvals, blocking questions and completion notifications as soon as
+other repository agents emit them.
+
 ## LocalExecutor Safety
 
 `LocalExecutor` validates that all filesystem paths stay under the repository

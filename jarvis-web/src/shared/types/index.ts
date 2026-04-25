@@ -18,5 +18,6 @@ export type ApprovalRequest = {
   title: string;
   description: string;
   affectedFiles?: string[];
+  repoAgentId?: string;
   metadata?: Record<string, unknown>;
 };

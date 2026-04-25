@@ -11,16 +11,21 @@ import {
 import { useSpeechToText } from '../hooks/useSpeechToText.ts'
 import { useTextToSpeech } from '../hooks/useTextToSpeech.ts'
 import { useAudioPlayback } from '../hooks/useAudioPlayback.ts'
-import { appSocket } from '../services/socket.ts'
+import { createAppSocket } from '../services/socket.ts'
 import type {
   AIResponseMessage,
+<<<<<<< Updated upstream
   AudioStreamChunkMessage,
   AudioStreamEndMessage,
   AudioStreamStartMessage,
+=======
+  ClientToServerMessage,
+>>>>>>> Stashed changes
   ServerToClientMessage,
   UserTranscriptMessage,
 } from '../types/protocol.ts'
 
+<<<<<<< Updated upstream
 // ── Streaming state types ─────────────────────────────────────────────────────
 
 // Used on the accumulate path (non-PCM fallback): collect all chunks then play
@@ -42,6 +47,14 @@ function base64ToArrayBuffer(b64: string): ArrayBuffer {
 
 // ── Context type ──────────────────────────────────────────────────────────────
 
+=======
+type TranscriptContext = {
+  sessionId?: string
+  repoAgentId?: string
+  turnId?: string
+}
+
+>>>>>>> Stashed changes
 type VoiceContextValue = {
   listening: boolean
   speaking: boolean
@@ -51,7 +64,12 @@ type VoiceContextValue = {
   getVolume: () => number
   startListening: () => void
   stopListening: () => void
-  sendTranscript: (text: string) => boolean
+  sendTranscript: (text: string, context?: TranscriptContext) => boolean
+  sendClientMessage: (message: ClientToServerMessage) => boolean
+  setTranscriptContext: (context: TranscriptContext) => void
+  addServerMessageListener: (
+    listener: (message: ServerToClientMessage) => void,
+  ) => () => void
 }
 
 const VoiceContext = createContext<VoiceContextValue | undefined>(undefined)
@@ -61,14 +79,23 @@ type VoiceProviderProps = {
   socket?: WebSocket
 }
 
+<<<<<<< Updated upstream
 // ── Provider ──────────────────────────────────────────────────────────────────
 
 export function VoiceProvider({ children, socket = appSocket }: VoiceProviderProps) {
+=======
+export function VoiceProvider({ children, socket }: VoiceProviderProps) {
+  const [resolvedSocket] = useState(() => socket ?? createAppSocket())
+>>>>>>> Stashed changes
   const [transcript, setTranscript] = useState('')
   const [socketConnected, setSocketConnected] = useState(
-    socket.readyState === WebSocket.OPEN,
+    resolvedSocket.readyState === WebSocket.OPEN,
   )
   const lastSentRef = useRef<{ text: string; at: number }>({ text: '', at: 0 })
+  const transcriptContextRef = useRef<TranscriptContext>({})
+  const serverListenersRef = useRef(
+    new Set<(message: ServerToClientMessage) => void>(),
+  )
   const loopbackMode = import.meta.env.VITE_VOICE_LOCAL_LOOPBACK === 'true'
 
   // Stream state refs — which path is active for the current turn.
@@ -95,13 +122,34 @@ export function VoiceProvider({ children, socket = appSocket }: VoiceProviderPro
   useEffect(() => {
     const onOpen = () => setSocketConnected(true)
     const onClose = () => setSocketConnected(false)
+<<<<<<< Updated upstream
     socket.addEventListener('open', onOpen)
     socket.addEventListener('close', onClose)
+=======
+
+    resolvedSocket.addEventListener('open', onOpen)
+    resolvedSocket.addEventListener('close', onClose)
+
+>>>>>>> Stashed changes
     return () => {
-      socket.removeEventListener('open', onOpen)
-      socket.removeEventListener('close', onClose)
+      resolvedSocket.removeEventListener('open', onOpen)
+      resolvedSocket.removeEventListener('close', onClose)
+      if (!socket) {
+        resolvedSocket.close()
+      }
     }
-  }, [socket])
+  }, [resolvedSocket, socket])
+
+  const sendClientMessage = useCallback(
+    (message: ClientToServerMessage) => {
+      if (resolvedSocket.readyState !== WebSocket.OPEN) {
+        return false
+      }
+      resolvedSocket.send(JSON.stringify(message))
+      return true
+    },
+    [resolvedSocket],
+  )
 
   // ── Stream cleanup ────────────────────────────────────────────────────────
   // Called before a new stream starts (superseding) and on barge-in / unmount.
@@ -117,7 +165,7 @@ export function VoiceProvider({ children, socket = appSocket }: VoiceProviderPro
 
   // ── Transcript send ───────────────────────────────────────────────────────
   const sendTranscript = useCallback(
-    (text: string) => {
+    (text: string, context: TranscriptContext = {}) => {
       const normalized = text.trim()
       if (!normalized) return false
 
@@ -128,9 +176,22 @@ export function VoiceProvider({ children, socket = appSocket }: VoiceProviderPro
 
       agentResponseTextRef.current = ''
 
+<<<<<<< Updated upstream
       if (socket.readyState === WebSocket.OPEN) {
         const message: UserTranscriptMessage = { type: 'USER_TRANSCRIPT', text: normalized }
         socket.send(JSON.stringify(message))
+=======
+      const payload: UserTranscriptMessage = {
+        type: 'USER_TRANSCRIPT',
+        text: normalized,
+        sessionId: context.sessionId ?? transcriptContextRef.current.sessionId,
+        repoAgentId: context.repoAgentId ?? transcriptContextRef.current.repoAgentId,
+        turnId: context.turnId ?? transcriptContextRef.current.turnId,
+      }
+
+      if (resolvedSocket.readyState === WebSocket.OPEN) {
+        resolvedSocket.send(JSON.stringify(payload))
+>>>>>>> Stashed changes
       } else if (loopbackMode) {
         const simulatedText = `You said: ${normalized}`
         agentResponseTextRef.current = simulatedText
@@ -143,14 +204,28 @@ export function VoiceProvider({ children, socket = appSocket }: VoiceProviderPro
       setTranscript('')
       return true
     },
-    [loopbackMode, socket, speak],
+    [loopbackMode, resolvedSocket, speak],
+  )
+
+  const setTranscriptContext = useCallback((context: TranscriptContext) => {
+    transcriptContextRef.current = context
+  }, [])
+
+  const addServerMessageListener = useCallback(
+    (listener: (message: ServerToClientMessage) => void) => {
+      serverListenersRef.current.add(listener)
+      return () => {
+        serverListenersRef.current.delete(listener)
+      }
+    },
+    [],
   )
 
   const { transcript: liveTranscript, isListening, startListening: startSTT, stopListening: stopSTT } =
     useSpeechToText({
       onFinalTranscript: (text) => {
         setTranscript(text)
-        sendTranscript(text)
+        sendTranscript(text, transcriptContextRef.current)
       },
     })
 
@@ -308,6 +383,7 @@ export function VoiceProvider({ children, socket = appSocket }: VoiceProviderPro
         return
       }
 
+<<<<<<< Updated upstream
       // ── Legacy path: full audio blob in one message (AI_RESPONSE) ─────────
       // Unchanged from original behaviour; used as fallback when backend
       // does not support streaming.
@@ -330,6 +406,13 @@ export function VoiceProvider({ children, socket = appSocket }: VoiceProviderPro
           if (played) return
         }
         await speak(responseText)
+=======
+      serverListenersRef.current.forEach((listener) => {
+        listener(payload)
+      })
+
+      if (payload.type !== 'AI_RESPONSE') {
+>>>>>>> Stashed changes
         return
       }
 
@@ -410,9 +493,17 @@ export function VoiceProvider({ children, socket = appSocket }: VoiceProviderPro
       }
     }
 
+<<<<<<< Updated upstream
     socket.addEventListener('message', onMessage)
     return () => { socket.removeEventListener('message', onMessage) }
   }, [appendPcmChunk, cleanupStream, initPcmStream, playFromBase64, playFromUrl, socket, speak, stop, stopAudio])
+=======
+    resolvedSocket.addEventListener('message', onMessage)
+    return () => {
+      resolvedSocket.removeEventListener('message', onMessage)
+    }
+  }, [playFromBase64, playFromUrl, resolvedSocket, speak, stop])
+>>>>>>> Stashed changes
 
   // ── Start / stop listening ────────────────────────────────────────────────
   const startListening = useCallback(() => {
@@ -443,6 +534,9 @@ export function VoiceProvider({ children, socket = appSocket }: VoiceProviderPro
       startListening,
       stopListening: stopSTT,
       sendTranscript,
+      sendClientMessage,
+      setTranscriptContext,
+      addServerMessageListener,
     }),
     [
       isListening,
@@ -455,6 +549,9 @@ export function VoiceProvider({ children, socket = appSocket }: VoiceProviderPro
       startListening,
       stopSTT,
       sendTranscript,
+      sendClientMessage,
+      setTranscriptContext,
+      addServerMessageListener,
     ],
   )
 

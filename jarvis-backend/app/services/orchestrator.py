@@ -7,6 +7,7 @@ from app.config import Settings
 from app.models.repository import RepositoryAgentState
 from app.models.schemas import AgentStateOutput, CreateRepoAgentOutput
 from app.models.turns import TurnRequest
+from app.models.voice_protocol import PendingTurnSummary, RepoSummary
 from app.services.global_manager import GlobalManager
 from app.services.graph_checkpointer import create_langgraph_sqlite_checkpointer
 from app.services.local_executor import LocalExecutor
@@ -14,6 +15,7 @@ from app.models.memory import RenderedMemoryView
 from app.services.memory_service import MemoryService
 from app.services.openai_client import LLMClient, OpenAIAgentsClient
 from app.services.persistence import SQLitePersistence
+from app.services.repo_discovery import RepoDiscoveryCandidate, RepoDiscoveryService
 from app.services.repository_registry import RepositoryRegistry
 from app.services.turn_scheduler import TurnScheduler
 
@@ -39,6 +41,7 @@ class JarvisOrchestrator:
         self.memory_service = memory_service
         self.memory_store = memory_service
         self.graph_checkpointer = graph_checkpointer
+        self.repo_discovery = RepoDiscoveryService(settings=settings, registry=registry)
 
     @classmethod
     def create(
@@ -153,6 +156,41 @@ class JarvisOrchestrator:
     async def list_repo_agents(self) -> List[RepositoryAgentState]:
         return self.registry.list_agents(user_id=self.settings.jarvis_user_id)
 
+    async def list_pending_turns(self, user_id: Optional[str] = None) -> List[TurnRequest]:
+        return self.manager.list_pending_turns(user_id or self.settings.jarvis_user_id)
+
+    async def get_repo_summaries(self, user_id: Optional[str] = None) -> List[RepoSummary]:
+        summaries = []
+        for state in self.registry.list_agents(user_id=user_id or self.settings.jarvis_user_id):
+            record = self.registry.persistence.get_repository(state.repo_id)
+            summaries.append(
+                RepoSummary(
+                    repoAgentId=state.repo_agent_id,
+                    repoId=state.repo_id,
+                    displayName=(record.display_name if record is not None else None) or state.repo_path.split("/")[-1],
+                    repoPath=state.repo_path,
+                    branchName=state.branch_name,
+                    phase=state.phase.value,
+                    status=_status_from_phase(state.phase.value),
+                    activeChatId=None,
+                    pendingTurns=len(
+                        [
+                            turn
+                            for turn in self.manager.list_pending_turns(state.user_id)
+                            if turn.repo_agent_id == state.repo_agent_id
+                        ]
+                    ),
+                )
+            )
+        return summaries
+
+    async def resolve_repo_by_name(self, query: str) -> Optional[RepoDiscoveryCandidate]:
+        resolved, _candidates = self.repo_discovery.resolve_repo_by_name(
+            query,
+            user_id=self.settings.jarvis_user_id,
+        )
+        return resolved
+
     async def get_memory_view(
         self,
         repo_agent_id: str,
@@ -170,3 +208,11 @@ class JarvisOrchestrator:
             memory_service=self.memory_service,
             graph_checkpointer=self.graph_checkpointer,
         )
+
+
+def _status_from_phase(phase: str) -> str:
+    if phase == "WAITING_APPROVAL":
+        return "waiting_approval"
+    if phase in {"PLANNING", "EXECUTING", "FINALIZING", "WAITING_FOR_USER"}:
+        return "running"
+    return "idle"

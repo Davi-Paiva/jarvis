@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from app.models.base import model_from_json, model_to_json
+from app.models.chat import ChatMessage, ChatSession, ChatSessionStatus
 from app.models.events import ManagerEvent
 from app.models.repository import RepositoryAgentState, RepositoryRecord
 from app.models.task import TaskAgentState
@@ -36,6 +37,12 @@ class SQLitePersistence:
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS events (event_id TEXT PRIMARY KEY, payload TEXT NOT NULL)"
             )
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS chat_sessions (chat_id TEXT PRIMARY KEY, repo_agent_id TEXT NOT NULL, user_id TEXT NOT NULL, active INTEGER NOT NULL, payload TEXT NOT NULL)"
+            )
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS chat_messages (message_id TEXT PRIMARY KEY, chat_id TEXT NOT NULL, repo_agent_id TEXT NOT NULL, user_id TEXT NOT NULL, payload TEXT NOT NULL)"
+            )
 
     def save_repository(self, record: RepositoryRecord) -> None:
         self._upsert("repositories", "repo_id", record.repo_id, model_to_json(record))
@@ -43,6 +50,15 @@ class SQLitePersistence:
     def get_repository(self, repo_id: str) -> Optional[RepositoryRecord]:
         payload = self._get_payload("repositories", "repo_id", repo_id)
         return model_from_json(RepositoryRecord, payload) if payload else None
+
+    def list_repositories(self, user_id: Optional[str] = None) -> List[RepositoryRecord]:
+        repositories = [
+            model_from_json(RepositoryRecord, payload)
+            for payload in self._list_payloads("repositories")
+        ]
+        if user_id is not None:
+            repositories = [record for record in repositories if record.user_id == user_id]
+        return sorted(repositories, key=lambda item: item.created_at)
 
     def save_repo_agent(self, state: RepositoryAgentState) -> None:
         self._upsert("repo_agents", "repo_agent_id", state.repo_agent_id, model_to_json(state))
@@ -107,6 +123,67 @@ class SQLitePersistence:
     def list_events(self) -> List[ManagerEvent]:
         return [model_from_json(ManagerEvent, payload) for payload in self._list_payloads("events")]
 
+    def save_chat_session(self, session: ChatSession) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO chat_sessions (chat_id, repo_agent_id, user_id, active, payload) VALUES (?, ?, ?, ?, ?)",
+                (
+                    session.chat_id,
+                    session.repo_agent_id,
+                    session.user_id,
+                    1 if session.status == ChatSessionStatus.ACTIVE else 0,
+                    model_to_json(session),
+                ),
+            )
+
+    def get_chat_session(self, chat_id: str) -> Optional[ChatSession]:
+        payload = self._get_payload("chat_sessions", "chat_id", chat_id)
+        return model_from_json(ChatSession, payload) if payload else None
+
+    def list_chat_sessions(
+        self,
+        repo_agent_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        active_only: bool = False,
+    ) -> List[ChatSession]:
+        sessions = [
+            model_from_json(ChatSession, payload)
+            for payload in self._list_payloads("chat_sessions")
+        ]
+        if repo_agent_id is not None:
+            sessions = [item for item in sessions if item.repo_agent_id == repo_agent_id]
+        if user_id is not None:
+            sessions = [item for item in sessions if item.user_id == user_id]
+        if active_only:
+            sessions = [item for item in sessions if item.status == ChatSessionStatus.ACTIVE]
+        return sorted(sessions, key=lambda item: item.created_at)
+
+    def get_active_chat_session(self, repo_agent_id: str) -> Optional[ChatSession]:
+        sessions = self.list_chat_sessions(repo_agent_id=repo_agent_id, active_only=True)
+        return sessions[-1] if sessions else None
+
+    def save_chat_message(self, message: ChatMessage) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO chat_messages (message_id, chat_id, repo_agent_id, user_id, payload) VALUES (?, ?, ?, ?, ?)",
+                (
+                    message.message_id,
+                    message.chat_id,
+                    message.repo_agent_id,
+                    message.user_id,
+                    model_to_json(message),
+                ),
+            )
+
+    def list_chat_messages(self, chat_id: str) -> List[ChatMessage]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT payload FROM chat_messages WHERE chat_id = ?",
+                (chat_id,),
+            ).fetchall()
+        messages = [model_from_json(ChatMessage, row[0]) for row in rows]
+        return sorted(messages, key=lambda item: item.created_at)
+
     def _connect(self) -> sqlite3.Connection:
         return sqlite3.connect(self.db_path)
 
@@ -129,4 +206,3 @@ class SQLitePersistence:
         with self._connect() as conn:
             rows = conn.execute("SELECT payload FROM %s" % table).fetchall()
         return [row[0] for row in rows]
-

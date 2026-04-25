@@ -14,6 +14,7 @@ from app.api.websocket import router as websocket_router
 from app.config import Settings, load_settings
 from app.services.openai_client import LLMClient
 from app.services.orchestrator import JarvisOrchestrator
+from app.services.voice_session_service import VoiceSessionService
 
 # Configure logging
 logging.basicConfig(
@@ -55,7 +56,9 @@ def create_app(
         allow_headers=["*"],  # Allow all headers
     )
     
-    app.state.orchestrator = create_orchestrator(settings=settings, llm_client=llm_client)
+    orchestrator = create_orchestrator(settings=settings, llm_client=llm_client)
+    app.state.orchestrator = orchestrator
+    app.state.voice_session_service = VoiceSessionService(orchestrator=orchestrator)
     app.include_router(api_router)
     app.include_router(health_router)
     app.include_router(voice_ws_router)

@@ -1,3 +1,6 @@
-const socketUrl = import.meta.env.VITE_WS_URL ?? 'ws://localhost:8000/ws'
+export const defaultSocketUrl =
+  import.meta.env.VITE_WS_URL ?? 'ws://localhost:8000/ws'
 
-export const appSocket = new WebSocket(socketUrl)
+export function createAppSocket(url: string = defaultSocketUrl): WebSocket {
+  return new WebSocket(url)
+}

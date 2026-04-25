@@ -1,8 +1,59 @@
+export type SessionStartMessage = {
+  type: 'SESSION_START'
+  sessionId?: string
+}
+
 export type UserTranscriptMessage = {
   type: 'USER_TRANSCRIPT'
   text: string
   sessionId?: string
   turnId?: string
+  repoAgentId?: string
+}
+
+export type VoiceChatMessage = {
+  type: 'CHAT_MESSAGE'
+  id: string
+  chatId: string
+  repoAgentId: string
+  role: 'user' | 'assistant' | 'system'
+  content: string
+  turnId?: string
+  createdAt: string
+}
+
+export type RepoSummary = {
+  repoAgentId: string
+  repoId: string
+  displayName: string
+  repoPath: string
+  branchName?: string
+  phase: string
+  status: 'idle' | 'running' | 'waiting_approval'
+  activeChatId?: string
+  pendingTurns: number
+}
+
+export type PendingTurnSummary = {
+  turnId: string
+  repoAgentId: string
+  repoName: string
+  type: string
+  message: string
+  requiresUserResponse: boolean
+  priority: number
+  createdAt: string
+}
+
+export type SessionStateMessage = {
+  type: 'SESSION_STATE'
+  sessionId: string
+  activeRepoAgentId?: string
+  activeChatId?: string
+  repos: RepoSummary[]
+  activeAgent?: RepoSummary
+  pendingTurns: PendingTurnSummary[]
+  messages: VoiceChatMessage[]
 }
 
 // ── Legacy: full audio in one shot ───────────────────────────────────────────
@@ -14,8 +65,11 @@ export type AIResponseMessage = {
   audioBase64?: string
   audioMimeType?: string
   turnId?: string
+  repoAgentId?: string
+  chatId?: string
 }
 
+<<<<<<< Updated upstream
 // ── Progressive streaming messages ───────────────────────────────────────────
 // Flow for one AI turn:
 //   AUDIO_STREAM_START  → N × AUDIO_STREAM_CHUNK  → AUDIO_STREAM_END
@@ -55,3 +109,17 @@ export type ServerToClientMessage =
   | AudioStreamChunkMessage
   | AudioStreamEndMessage
 
+=======
+export type PendingTurnMessage = {
+  type: 'PENDING_TURN'
+  pendingTurn: PendingTurnSummary
+}
+
+export type ClientToServerMessage = SessionStartMessage | UserTranscriptMessage
+
+export type ServerToClientMessage =
+  | SessionStateMessage
+  | VoiceChatMessage
+  | AIResponseMessage
+  | PendingTurnMessage
+>>>>>>> Stashed changes

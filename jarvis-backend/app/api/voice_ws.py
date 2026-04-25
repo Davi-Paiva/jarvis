@@ -4,20 +4,36 @@ import base64
 import json
 import logging
 import os
+<<<<<<< Updated upstream
 import time
 import uuid
 from typing import AsyncIterator, Optional
+=======
+from typing import List, Optional
+>>>>>>> Stashed changes
 
 import httpx
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app.config import load_settings
+<<<<<<< Updated upstream
 from app.models.voice_protocol import (
     AIResponseMessage,
     AudioStreamChunkMessage,
     AudioStreamEndMessage,
     AudioStreamStartMessage,
     UserTranscriptMessage,
+=======
+from app.models.events import ManagerEvent
+from app.models.voice_protocol import (
+    AIResponseMessage,
+    PendingTurnMessage,
+    ServerToClientMessage,
+    SessionStartMessage,
+    SessionStateMessage,
+    UserTranscriptMessage,
+    VoiceChatMessage,
+>>>>>>> Stashed changes
 )
 
 router = APIRouter()
@@ -67,6 +83,7 @@ def _get_elevenlabs_config() -> tuple[Optional[str], Optional[str], str]:
     return api_key, voice_id, model_id
 
 
+<<<<<<< Updated upstream
 def build_placeholder_response(text: str, turn_id: Optional[str]) -> AIResponseMessage:
     response_text = (
         "I heard you say: "
@@ -76,6 +93,12 @@ def build_placeholder_response(text: str, turn_id: Optional[str]) -> AIResponseM
 
 
 # ── Streaming path ────────────────────────────────────────────────────────────
+=======
+async def synthesize_with_elevenlabs(text: str) -> Optional[str]:
+    api_key = os.getenv("ELEVENLABS_API_KEY")
+    voice_id = os.getenv("ELEVENLABS_VOICE_ID")
+    model_id = os.getenv("ELEVENLABS_MODEL_ID", "eleven_multilingual_v2")
+>>>>>>> Stashed changes
 
 async def stream_elevenlabs_chunks(text: str) -> AsyncIterator[bytes]:
     """Yield raw audio bytes in chunks as ElevenLabs generates them.
@@ -228,17 +251,36 @@ async def synthesize_with_elevenlabs(text: str) -> Optional[str]:
 @router.websocket("/ws")
 async def websocket_voice(websocket: WebSocket) -> None:
     await websocket.accept()
+    session_id: Optional[str] = None
+    orchestrator = websocket.app.state.orchestrator
+    voice_service = websocket.app.state.voice_session_service
+    listener_queue = orchestrator.manager.register_listener()
+    listener_task = None
 
     try:
+        import asyncio
+        message_lock = asyncio.Lock()
+
+        async def forward_manager_events() -> None:
+            while True:
+                event = await listener_queue.get()
+                if session_id is None:
+                    continue
+                async with message_lock:
+                    messages = await voice_service.handle_manager_event(session_id, event)
+                    await _send_messages(websocket, messages)
+
+        listener_task = asyncio.create_task(forward_manager_events())
+
         while True:
             raw_message = await websocket.receive_text()
 
             try:
                 payload = json.loads(raw_message)
-                transcript = UserTranscriptMessage.model_validate(payload)
             except Exception:
                 continue
 
+<<<<<<< Updated upstream
             if transcript.type != "USER_TRANSCRIPT":
                 continue
 
@@ -268,5 +310,53 @@ async def websocket_voice(websocket: WebSocket) -> None:
                     response.audioMimeType = "audio/mpeg"
                 await websocket.send_text(response.model_dump_json())
 
+=======
+            message_type = payload.get("type")
+            messages: List[ServerToClientMessage] = []
+            async with message_lock:
+                if message_type == "SESSION_START":
+                    start_message = SessionStartMessage.model_validate(payload)
+                    session_id = start_message.sessionId
+                    messages = voice_service.start_session(session_id=session_id)
+                    if session_id is None and messages and isinstance(messages[0], SessionStateMessage):
+                        session_id = messages[0].sessionId
+                elif message_type == "USER_TRANSCRIPT":
+                    transcript = UserTranscriptMessage.model_validate(payload)
+                    session_id = transcript.sessionId or session_id
+                    if session_id is None:
+                        startup_messages = voice_service.start_session()
+                        if startup_messages and isinstance(startup_messages[0], SessionStateMessage):
+                            session_id = startup_messages[0].sessionId
+                        messages.extend(startup_messages)
+                    if session_id is not None:
+                        messages.extend(
+                            await voice_service.handle_user_transcript(
+                                session_id=session_id,
+                                text=transcript.text,
+                                repo_agent_id=transcript.repoAgentId,
+                                turn_id=transcript.turnId,
+                            )
+                        )
+                else:
+                    continue
+                await _send_messages(websocket, messages)
+>>>>>>> Stashed changes
     except WebSocketDisconnect:
         return
+    finally:
+        orchestrator.manager.unregister_listener(listener_queue)
+        if listener_task is not None:
+            listener_task.cancel()
+
+
+async def _send_messages(
+    websocket: WebSocket,
+    messages: List[ServerToClientMessage],
+) -> None:
+    for message in messages:
+        if isinstance(message, AIResponseMessage):
+            audio_base64 = await synthesize_with_elevenlabs(message.responseText)
+            if audio_base64:
+                message.audioBase64 = audio_base64
+                message.audioMimeType = "audio/mpeg"
+        await websocket.send_text(message.model_dump_json())
