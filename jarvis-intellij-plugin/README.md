@@ -11,7 +11,26 @@ Minimal IntelliJ Platform plugin scaffold for reviewing and understanding code w
 - Async HTTP integration with `POST http://localhost:3000/analyze`
 - Response rendering with summary and step-by-step explanations
 - `Next Step` button to iterate through explanation steps
+- Global dependency documentation browser with one-click open
 - Placeholder packages for future describe, diagram, documentation, and execution-explainer features
+
+## Dependency Documentation Shortcut
+
+Use this action to list dependencies discovered from project manifests and open their docs with one click.
+
+- Windows/Linux shortcut: `Ctrl+Alt+Shift+D`
+- macOS shortcut: `Cmd+Alt+Shift+D`
+- Menu location: `Tools > Jarvis: Dependency Documentation`
+
+Supported manifest files:
+
+- `package.json`
+- `requirements*.txt`
+- `pyproject.toml`
+- `Cargo.toml`
+- `pom.xml`
+- `build.gradle`
+- `build.gradle.kts`
 
 ## Run locally
 
