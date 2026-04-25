@@ -49,6 +49,7 @@ function MainPage({ initialFolder, repoId }: MainPageProps) {
   const wsRef = useRef<ChatWebSocket | null>(null);
   const streamingMessageIdRef = useRef<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
 
   // Auto-scroll to bottom when new messages arrive
   const scrollToBottom = () => {
@@ -62,11 +63,8 @@ function MainPage({ initialFolder, repoId }: MainPageProps) {
   // Connect to WebSocket when component mounts with a repoId
   useEffect(() => {
     if (!repoId) {
-      console.log('[MainPage] No repoId provided, skipping WebSocket connection');
       return;
     }
-
-    console.log('[MainPage] Connecting to WebSocket with repoId:', repoId);
     
     const clientId = `client-${Date.now()}`;
     
@@ -74,11 +72,9 @@ function MainPage({ initialFolder, repoId }: MainPageProps) {
       repoId: repoId,
       clientId,
       onConnect: () => {
-        console.log('[MainPage] ✓ WebSocket connected');
         setIsConnected(true);
       },
       onDisconnect: () => {
-        console.log('[MainPage] ✗ WebSocket disconnected');
         setIsConnected(false);
       },
       onToken: (token: string) => {
@@ -95,15 +91,17 @@ function MainPage({ initialFolder, repoId }: MainPageProps) {
         });
       },
       onComplete: (fullMessage: string) => {
-        console.log('[MainPage] Message complete:', fullMessage);
+        // CRITICAL: Clear streaming ID FIRST to prevent race condition with token updates
+        const currentStreamingId = streamingMessageIdRef.current;
+        streamingMessageIdRef.current = null;
+        setStreamingMessageId(null);
+        
         setMessages((prev) => {
-          const currentStreamingId = streamingMessageIdRef.current;
           if (!currentStreamingId) {
             return prev;
           }
           const lastMessage = prev[prev.length - 1];
           if (lastMessage && lastMessage.id === currentStreamingId) {
-            // Ensure a full assistant message is visible even if token updates were missed.
             return [
               ...prev.slice(0, -1),
               {
@@ -116,8 +114,6 @@ function MainPage({ initialFolder, repoId }: MainPageProps) {
         });
         setIsLoading(false);
         setLoadingStatus("JARVIS is processing your message...");
-        setStreamingMessageId(null);
-        streamingMessageIdRef.current = null;
       },
       onError: (error: string) => {
         console.error('[MainPage] WebSocket error:', error);
@@ -141,7 +137,6 @@ function MainPage({ initialFolder, repoId }: MainPageProps) {
 
     // Cleanup on unmount
     return () => {
-      console.log('[MainPage] Cleaning up WebSocket connection');
       ws.disconnect();
       wsRef.current = null;
     };
@@ -170,18 +165,20 @@ function MainPage({ initialFolder, repoId }: MainPageProps) {
   };
 
   const handleSendMessage = () => {
-    console.log('[MainPage] handleSendMessage called, inputMessage:', inputMessage);
+    const messageFromInput = inputRef.current?.value || inputMessage;
+    const userText = messageFromInput.trim();
     
-    if (!inputMessage.trim()) {
-      console.log('[MainPage] Empty message, ignoring');
+    if (!userText.trim()) {
       return;
     }
-
-    // Check if WebSocket is connected
-    console.log('[MainPage] Checking WebSocket - wsRef:', !!wsRef.current, 'isConnected:', isConnected);
+    const lastAssistantMessage = [...messages]
+      .reverse()
+      .find((message) => message.role === "assistant")
+      ?.content
+      .toLowerCase();
+    const normalizedUserText = userText.trim().toLowerCase();
     
     if (!wsRef.current || !isConnected) {
-      console.error('[MainPage] WebSocket not connected!');
       const errorMessage: Message = {
         id: `error-${Date.now()}`,
         role: "assistant",
@@ -191,14 +188,7 @@ function MainPage({ initialFolder, repoId }: MainPageProps) {
       setMessages((prev) => [...prev, errorMessage]);
       return;
     }
-
-    const userText = inputMessage;
-    const lastAssistantMessage = [...messages]
-      .reverse()
-      .find((message) => message.role === "assistant")
-      ?.content
-      .toLowerCase();
-    const normalizedUserText = userText.trim().toLowerCase();
+    
     const looksLikeExecutionApproval =
       (normalizedUserText === "yes" ||
         normalizedUserText === "y" ||
@@ -218,7 +208,6 @@ function MainPage({ initialFolder, repoId }: MainPageProps) {
       setLoadingStatus("JARVIS is processing your message...");
     }
 
-    console.log('[MainPage] Creating user message');
     const newMessage: Message = {
       id: Date.now().toString(),
       role: "user",
@@ -244,23 +233,18 @@ function MainPage({ initialFolder, repoId }: MainPageProps) {
     streamingMessageIdRef.current = assistantMessageId;
 
     // Send message via WebSocket
-    console.log('[MainPage] Calling wsRef.current.sendMessage()');
     wsRef.current.sendMessage(userText);
-    console.log('[MainPage] sendMessage call completed');
   };
 
-  const handleKeyPress = (e: React.KeyboardEvent) => {
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSendMessage();
     }
   };
 
-  const selectedFolder = folders.find((f) => f.id === selectedFolderId);
-
   return (
-    <div className="main-page">
-      {/* Sidebar */}
+    <div className="main-page">{/* Sidebar */}
       <aside className="sidebar">
         <div className="sidebar-header">
           <h2 className="sidebar-title">Workspaces</h2>
@@ -309,15 +293,17 @@ function MainPage({ initialFolder, repoId }: MainPageProps) {
       <div className="chat-container">
         <div className="chat-header">
           <div className="chat-header-info">
-            <h3 className="chat-title">{selectedFolder?.name}</h3>
-            <p className="chat-subtitle">{selectedFolder?.path}</p>
+            <h3 className="chat-title">{folders.find((f) => f.id === selectedFolderId)?.name}</h3>
+            <p className="chat-subtitle">{folders.find((f) => f.id === selectedFolderId)?.path}</p>
           </div>
-          {repoId && (
-            <div className={`connection-status ${isConnected ? 'connected' : 'disconnected'}`}>
-              <span className="status-dot"></span>
-              {isConnected ? 'Connected' : 'Disconnected'}
-            </div>
-          )}
+          <div style={{display: 'flex', gap: '1rem', alignItems: 'center'}}>
+            {repoId && (
+              <div className={`connection-status ${isConnected ? 'connected' : 'disconnected'}`}>
+                <span className="status-dot"></span>
+                {isConnected ? 'Connected' : 'Disconnected'}
+              </div>
+            )}
+          </div>
         </div>
 
         <div className="messages-container">
@@ -341,7 +327,9 @@ function MainPage({ initialFolder, repoId }: MainPageProps) {
                 )}
               </div>
               <div className="message-content">
-                <div className="message-text">{message.content}</div>
+                <div className="message-text">
+                  {message.content}
+                </div>
               </div>
             </div>
           ))}
@@ -365,11 +353,12 @@ function MainPage({ initialFolder, repoId }: MainPageProps) {
 
         <div className="input-container">
           <textarea
+            ref={inputRef}
             className="message-input"
             placeholder="Ask JARVIS anything about your code..."
             value={inputMessage}
             onChange={(e) => setInputMessage(e.target.value)}
-            onKeyPress={handleKeyPress}
+            onKeyDown={handleKeyDown}
             rows={1}
           />
           <button

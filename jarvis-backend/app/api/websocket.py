@@ -71,27 +71,28 @@ async def chat_websocket(
             "repo_id": repo_id,
             "message": "Connected to chat"
         }, client_id)
-        logger.info(f"Sent connection confirmation to client {client_id}")
         
         while True:
-            # Receive message from client
-            logger.info(f"Waiting for message from client {client_id}...")
             data = await websocket.receive_text()
-            logger.info(f"Received raw data from client {client_id}: {data}")
-            message_data = json.loads(data)
             
-            logger.info(f"Parsed message from client {client_id}: {message_data}")
+            try:
+                message_data = json.loads(data)
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse JSON from client {client_id}: {e}")
+                await manager.send_message({
+                    "type": "error",
+                    "content": "Invalid JSON format"
+                }, client_id)
+                continue
             
             if message_data.get("type") == "message":
-                logger.info(f"Processing message from client {client_id}: {message_data.get('content')}")
+                user_message = message_data.get("content", "")
+                
                 # Send start signal
                 await manager.send_message({
                     "type": "start",
                     "message_id": f"msg_{client_id}"
                 }, client_id)
-                logger.info(f"Sent start signal to client {client_id}")
-                
-                user_message = message_data.get("content", "")
                 orchestrator = websocket.app.state.orchestrator
 
                 resolved_repo_agent_id = _resolve_repo_agent_id(orchestrator, repo_id)
@@ -116,9 +117,8 @@ async def chat_websocket(
                     resolved_repo_agent_id,
                 )
                 response_text = _extract_response_text(result, latest_pending_turn)
-                logger.info(f"Streaming response to client {client_id}: {response_text}")
                 
-                # Stream tokens to preserve current desktop chat protocol.
+                # Stream tokens to preserve current desktop chat protocol
                 for i, char in enumerate(response_text):
                     await manager.send_message({
                         "type": "token",
@@ -126,17 +126,22 @@ async def chat_websocket(
                         "index": i
                     }, client_id)
                 
-                logger.info(f"Finished streaming to client {client_id}")
-                # Send end signal
-                await manager.send_message({
+                # Build end message with turn information if available
+                end_message = {
                     "type": "end",
                     "message_id": f"msg_{client_id}",
                     "content": response_text
-                }, client_id)
-                logger.info(f"Sent end signal to client {client_id}")
+                }
+                
+                if latest_pending_turn is not None:
+                    end_message["turn_id"] = latest_pending_turn.id
+                    end_message["turn_type"] = latest_pending_turn.type.value
+                    end_message["requires_response"] = latest_pending_turn.requires_user_response
+                
+                # Send end signal
+                await manager.send_message(end_message, client_id)
             
             elif message_data.get("type") == "ping":
-                logger.info(f"Received ping from client {client_id}, sending pong")
                 await manager.send_message({
                     "type": "pong"
                 }, client_id)
@@ -175,19 +180,26 @@ def _resolve_repo_agent_id(orchestrator: Any, repo_identifier: str) -> Optional[
 
 
 def _extract_response_text(result: Any, latest_pending_turn: Optional[Any] = None) -> str:
+    """Extract response text from result, ensuring full message is returned."""
+    extracted_text = ""
+    
     if latest_pending_turn is not None and getattr(latest_pending_turn, "message", None):
-        return str(latest_pending_turn.message)
+        extracted_text = str(latest_pending_turn.message)
+        return extracted_text
 
     next_turn = getattr(result, "next_turn", None)
     if next_turn is not None and getattr(next_turn, "message", None):
-        return str(next_turn.message)
+        extracted_text = str(next_turn.message)
+        return extracted_text
 
     agent = getattr(result, "agent", None)
     if agent is not None:
         if getattr(agent, "last_explanation", None):
-            return str(agent.last_explanation)
+            extracted_text = str(agent.last_explanation)
+            return extracted_text
         if getattr(agent, "final_report", None):
-            return str(agent.final_report)
+            extracted_text = str(agent.final_report)
+            return extracted_text
 
     return "I understood your request and started processing it."
 

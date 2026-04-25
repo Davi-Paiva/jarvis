@@ -84,37 +84,29 @@ export class ChatWebSocket {
     
     const url = `${wsUrl}/ws/chat/${this.config.repoId}/${this.config.clientId}`;
     
-    console.log('[WebSocket] Attempting to connect:', url);
-    console.log('[WebSocket] RepoId:', this.config.repoId, 'ClientId:', this.config.clientId);
-    
     try {
       this.ws = new WebSocket(url);
       
       this.ws.onopen = () => {
-        console.log('[WebSocket] Connected successfully!');
         this.reconnectAttempts = 0;
         this.reconnectDelay = 1000;
         this.config.onConnect?.();
       };
       
       this.ws.onmessage = (event) => {
-        console.log('[WebSocket] Received message:', event.data);
         try {
           const message: WebSocketMessage = JSON.parse(event.data);
-          console.log('[WebSocket] Parsed message:', message);
           this.handleMessage(message);
         } catch (error) {
-          console.error('[WebSocket] Failed to parse message:', error, 'Raw:', event.data);
+          console.error('[WebSocket] Failed to parse message:', error);
         }
       };
       
-      this.ws.onerror = (error) => {
-        console.error('[WebSocket] Error event:', error);
+      this.ws.onerror = () => {
         this.config.onError?.('WebSocket connection error');
       };
       
-      this.ws.onclose = (event) => {
-        console.log('[WebSocket] Disconnected - Code:', event.code, 'Reason:', event.reason, 'Clean:', event.wasClean);
+      this.ws.onclose = () => {
         this.config.onDisconnect?.();
         this.attemptReconnect();
       };
@@ -128,12 +120,10 @@ export class ChatWebSocket {
    * Handle incoming WebSocket messages
    */
   private handleMessage(message: WebSocketMessage): void {
-    // Always call the general message handler if provided
     this.config.onMessage?.(message);
     
     switch (message.type) {
       case 'connected':
-        console.log('[WebSocket] Connection confirmed:', message.message);
         break;
         
       case 'start':
@@ -146,7 +136,9 @@ export class ChatWebSocket {
         break;
         
       case 'end':
-        this.config.onComplete?.(message.content || this.currentMessageBuffer);
+        // Use message.content from the end event
+        const endContent = message.content || '';
+        this.config.onComplete?.(endContent);
         this.currentMessageBuffer = '';
         break;
         
@@ -155,7 +147,6 @@ export class ChatWebSocket {
         break;
         
       case 'pong':
-        // Heartbeat response
         break;
         
       default:
@@ -167,10 +158,7 @@ export class ChatWebSocket {
    * Send a chat message
    */
   sendMessage(content: string, threadId?: string): void {
-    console.log('[WebSocket] sendMessage called with:', { content, threadId });
-    
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      console.error('[WebSocket] Cannot send message - WebSocket not open. State:', this.ws?.readyState);
       this.config.onError?.('WebSocket is not connected');
       return;
     }
@@ -181,9 +169,7 @@ export class ChatWebSocket {
       thread_id: threadId
     };
     
-    console.log('[WebSocket] Sending message:', message);
     this.ws.send(JSON.stringify(message));
-    console.log('[WebSocket] Message sent successfully');
   }
   
   /**
