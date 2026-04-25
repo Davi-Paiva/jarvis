@@ -438,22 +438,17 @@ class OpenAIAgentsClient(FakeLLMClient):
             "- Keep it to 2-3 steps MAX - combine related work\n"
             "- Do not just paraphrase the user's request\n"
             "- Do not quote or copy the user's original prompt verbatim in any step description\n"
-            "- Make each step specific to repository work\n"
-            "- Separate inspection/design work from implementation and validation\n"
-            "- Make descriptions conversational and concise, but NO markdown formatting\n"
-            "- Write like you're explaining to a coworker (contractions are good)\n"
-            "- Write titles and descriptions for natural voice output\n"
-            "- When mentioning files in descriptions, use natural language\n"
-            "- For example, say 'the client file in the services folder' not 'services/client.py'\n"
-            "- Explain what will be changed and why in plain language\n"
-            "- Use the repository context and included file contents to anchor the steps to real modules and surfaces\n"
+            "- Write like you're explaining to a coworker - use 'I'll' or 'We'll' or 'Let's'\n"
+            "- Be casual and conversational - contractions are good\n"
+            "- Write for natural voice output\n"
+            "- When mentioning files, use natural language like 'the client file in services'\n"
+            "- One sentence per description - keep it brief\n"
             "- In the 'scope' array, include actual file paths or patterns for technical processing\n\n"
             "Task goal: %s\n"
             "Requirements: %s\n"
             "Plan text:\n%s\n\n"
-            "Repository context:\n%s\n\n"
-            "Return a JSON array of step objects with conversational descriptions:"
-        ) % (state.task_goal, state.requirements, plan, state.planning_context or "")
+            "Return a JSON array of step objects with casual, coworker-style descriptions:"
+        ) % (state.task_goal, state.requirements, plan)
         parsed = await self._run_json_agent(
             "Task splitter agent",
             prompt,
