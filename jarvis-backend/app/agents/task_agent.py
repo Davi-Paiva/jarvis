@@ -39,7 +39,7 @@ class TaskAgent:
             available_files = self.executor.list_files(repo_state.repo_path, max_files=2000)
             repo_context = self._build_repo_context(repo_state, available_files)
             requested_file_contents: List[str] = []
-            patch_errors: List[str] = []
+            attempt_feedback: List[str] = []
             max_attempts = 5 if repo_state.intent_type == "MODIFY_CODE" and self.llm_client.is_live() else 1
 
             self._set_status(TaskAgentStatus.WORKING)
@@ -48,7 +48,7 @@ class TaskAgent:
                 attempt_repo_context = _compose_attempt_context(
                     repo_context,
                     requested_file_contents,
-                    patch_errors,
+                    attempt_feedback,
                     attempt,
                     max_attempts,
                 )
@@ -71,11 +71,11 @@ class TaskAgent:
                         self.state.changed_files = changed
                         break
                     except Exception as exc:
-                        patch_errors.append(
+                        attempt_feedback.append(
                             "Attempt %s patch failed: %s" % (attempt, str(exc))
                         )
                         if attempt >= max_attempts:
-                            self.state.last_error = _build_patch_failure_error(patch_errors)
+                            self.state.last_error = _build_patch_failure_error(attempt_feedback)
                             self._set_status(TaskAgentStatus.FAILED)
                             return self.state
                         continue
@@ -84,18 +84,29 @@ class TaskAgent:
                     self.state.changed_files = result.changed_files
                     break
 
-                if attempt >= max_attempts or not result.needed_files:
+                if result.needed_files:
+                    new_contents = self._load_requested_file_contents(
+                        repo_path=repo_state.repo_path,
+                        available_files=available_files,
+                        needed_files=result.needed_files,
+                        already_loaded=requested_file_contents,
+                    )
+                    if new_contents:
+                        requested_file_contents.extend(new_contents)
+                        continue
+                    if attempt < max_attempts:
+                        attempt_feedback.append(
+                            _build_unresolved_files_feedback(result.needed_files)
+                        )
+                        continue
                     break
 
-                new_contents = self._load_requested_file_contents(
-                    repo_path=repo_state.repo_path,
-                    available_files=available_files,
-                    needed_files=result.needed_files,
-                    already_loaded=requested_file_contents,
-                )
-                if not new_contents:
-                    break
-                requested_file_contents.extend(new_contents)
+                if attempt < max_attempts and _should_retry_without_changes(result.result_summary):
+                    attempt_feedback.append(
+                        _build_missing_diff_feedback(result.result_summary)
+                    )
+                    continue
+                break
 
             if result is None:
                 raise RuntimeError("Implementation task did not return a result.")
@@ -521,7 +532,7 @@ def _patch_scope(repo_state: RepositoryAgentState, task_state: TaskAgentState) -
 def _compose_attempt_context(
     base_repo_context: str,
     requested_file_contents: List[str],
-    patch_errors: List[str],
+    attempt_feedback: List[str],
     attempt: int,
     max_attempts: int,
 ) -> str:
@@ -533,11 +544,11 @@ def _compose_attempt_context(
         sections.append(
             "Requested file contents:\n%s" % "\n\n".join(requested_file_contents)
         )
-    if patch_errors:
+    if attempt_feedback:
         sections.append(
-            "Previous patch application errors:\n%s\n\n"
-            "Return a corrected unified git diff. Do not repeat the same malformed patch."
-            % "\n".join("- %s" % item for item in patch_errors[-3:])
+            "Previous execution feedback:\n%s\n\n"
+            "Your next response must either return a valid unified git diff in `proposed_patch` or request additional repository files through `needed_files`."
+            % "\n".join("- %s" % item for item in attempt_feedback[-3:])
         )
     return "\n\n".join(section for section in sections if section.strip())
 
@@ -571,3 +582,48 @@ def _focus_paths_from_description(description: str) -> List[str]:
         elif lines:
             break
     return [line for line in lines if line]
+
+
+def _build_missing_diff_feedback(result_summary: Optional[str]) -> str:
+    summary = " ".join((result_summary or "").split()).strip()
+    if summary:
+        return (
+            "The previous attempt returned no patch and no requested files. "
+            "Do not return a placeholder, plan, or 'next step' message. "
+            "Return an actual grounded unified diff now, or request the exact additional files you still need. "
+            "Previous summary: %s"
+        ) % summary
+    return (
+        "The previous attempt returned no patch and no requested files. "
+        "Do not return a placeholder or planning message. "
+        "Return an actual grounded unified diff now, or request the exact additional files you still need."
+    )
+
+
+def _build_unresolved_files_feedback(needed_files: List[str]) -> str:
+    return (
+        "The previous attempt requested additional files, but none of these requests could be resolved "
+        "to repository files: %s. Request exact relative paths, unique basenames, or unique path suffixes."
+    ) % ", ".join(needed_files[:10])
+
+
+def _should_retry_without_changes(result_summary: Optional[str]) -> bool:
+    summary = " ".join((result_summary or "").lower().split())
+    if not summary:
+        return False
+    placeholder_signals = (
+        "placeholder",
+        "next step",
+        "next attempt",
+        "none has been applied yet",
+        "no diff has been applied yet",
+        "current response is a placeholder",
+        "need to produce the actual patch",
+        "produce the actual patch against the repository contents in the next step",
+        "i can implement",
+        "i can produce the patch",
+        "however, i need to produce the actual patch",
+        "this attempt is only",
+        "not been applied yet",
+    )
+    return any(signal in summary for signal in placeholder_signals)

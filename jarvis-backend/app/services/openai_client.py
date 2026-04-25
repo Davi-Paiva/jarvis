@@ -581,6 +581,8 @@ class OpenAIAgentsClient(FakeLLMClient):
             "Do not wrap the patch in markdown fences.\n"
             "Do not add commentary before or after the diff.\n"
             "Use `needed_files` only when you need additional specific files before proposing a safe patch; otherwise return an empty list.\n"
+            "Never return a placeholder response such as saying you will produce the patch in the next step, that this attempt is only an inspection pass, or that no diff has been applied yet.\n"
+            "If you already have enough grounding to describe the implementation, you must return the concrete diff now.\n"
             "For MODIFY_CODE tasks, do not set `proposed_patch` to null unless the repository already fully satisfies the request or you need more files through `needed_files`.\n"
             "If no more repository files would help and you cannot produce a patch, explain the blocker in `result_summary` and leave `needed_files` empty.\n"
             "`test_command` must be either null or a real shell command that can be executed from the repository root.\n"
