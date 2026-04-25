@@ -10,6 +10,14 @@ from app.models.task import TaskAgentState
 from app.services.local_executor import LocalExecutor
 from app.services.memory_service import MemoryService
 from app.services.openai_client import LLMClient
+from app.services.repo_context_builder import (
+    build_file_content_sections,
+    filter_scope,
+    pick_candidate_files,
+    render_repo_tree,
+    select_context_files,
+    summarize_repo_files,
+)
 from app.services.repository_registry import RepositoryRegistry
 
 
@@ -156,12 +164,12 @@ class TaskAgent:
         repo_path = repo_state.repo_path
         files = available_files
         effective_scope = self.state.scope or _focus_paths_from_description(self.state.description)
-        visible_files = _filter_scope(files, effective_scope)
+        visible_files = filter_scope(files, effective_scope)
         scope_fallback_used = False
         if not visible_files:
             visible_files = files
             scope_fallback_used = bool(effective_scope)
-        context_files = _select_context_files(repo_state, self.state, visible_files)
+        context_files = select_context_files(_context_text_chunks(repo_state, self.state), visible_files)
 
         sections = []
         if scope_fallback_used:
@@ -170,12 +178,12 @@ class TaskAgent:
                 "The planned scope did not match any repository files, so execution is using the broader repository context."
             )
         sections.append(
-            "Repository capability summary:\n%s" % _summarize_repo_files(visible_files)
+            "Repository capability summary:\n%s" % summarize_repo_files(visible_files)
         )
         sections.extend(
             [
                 "Visible files:\n%s" % "\n".join("- %s" % item for item in context_files[:120]),
-                "Repository tree:\n%s" % _render_repo_tree(context_files[:120]),
+                "Repository tree:\n%s" % render_repo_tree(context_files[:120]),
             ]
         )
         previews = self._build_candidate_file_previews(repo_state, visible_files)
@@ -188,17 +196,14 @@ class TaskAgent:
         repo_state: RepositoryAgentState,
         visible_files: List[str],
     ) -> str:
-        previews: List[str] = []
-        for relative_path in _pick_candidate_files(repo_state, self.state, visible_files):
-            try:
-                content = self.executor.read_file(repo_state.repo_path, relative_path, max_chars=2500)
-            except Exception:
-                continue
-            preview = "\n".join(content.splitlines()[:80]).strip()
-            if not preview:
-                continue
-            previews.append("File: %s\n%s" % (relative_path, preview))
-        return "\n\n".join(previews)
+        return build_file_content_sections(
+            repo_path=repo_state.repo_path,
+            files=pick_candidate_files(_context_text_chunks(repo_state, self.state), visible_files),
+            read_file=self.executor.read_file,
+            max_files=8,
+            max_chars=2500,
+            max_lines=80,
+        )
 
     def _load_requested_file_contents(
         self,
@@ -224,199 +229,6 @@ class TaskAgent:
             contents.append("File: %s\n%s" % (matched, content))
             loaded_paths.add(matched)
         return contents
-
-
-def _filter_scope(files: List[str], scope: List[str]) -> List[str]:
-    if not scope:
-        return files
-    normalized_scope = [item.strip().strip("/") for item in scope if item.strip()]
-    return [
-        path
-        for path in files
-        if any(path == item or path.startswith(item + "/") for item in normalized_scope)
-    ]
-
-
-def _render_repo_tree(files: List[str], max_lines: int = 80) -> str:
-    if not files:
-        return "- (no visible files)"
-    lines: List[str] = []
-    seen = set()
-    for file_path in files:
-        parts = file_path.split("/")
-        for depth, part in enumerate(parts):
-            key = tuple(parts[: depth + 1])
-            if key in seen:
-                continue
-            seen.add(key)
-            indent = "  " * depth
-            suffix = "/" if depth < len(parts) - 1 else ""
-            lines.append("%s- %s%s" % (indent, part, suffix))
-            if len(lines) >= max_lines:
-                lines.append("  ...")
-                return "\n".join(lines)
-    return "\n".join(lines)
-
-
-def _pick_candidate_files(
-    repo_state: RepositoryAgentState,
-    task_state: TaskAgentState,
-    visible_files: List[str],
-    limit: int = 8,
-) -> List[str]:
-    if not visible_files:
-        return []
-    keywords = _task_keywords(repo_state, task_state)
-    priority_names = {
-        "app",
-        "homepage",
-        "home",
-        "layout",
-        "routes",
-        "router",
-        "index",
-        "main",
-        "page",
-        "hero",
-        "landing",
-        "style",
-        "styles",
-    }
-    scored = []
-    for index, path in enumerate(visible_files):
-        lowered = path.lower()
-        filename = lowered.rsplit("/", 1)[-1]
-        stem = filename.rsplit(".", 1)[0]
-        score = 0
-        for keyword in keywords:
-            if keyword and keyword in stem:
-                score += 5
-            elif keyword and keyword in lowered:
-                score += 3
-        if stem in priority_names:
-            score += 4
-        if any(part in lowered for part in ("/pages/", "/components/", "/routes/", "/app/")):
-            score += 2
-        if filename.endswith((".tsx", ".ts", ".jsx", ".js", ".css", ".scss")):
-            score += 1
-        scored.append((score, index, path))
-
-    scored.sort(key=lambda item: (-item[0], item[1]))
-    selected = [path for score, _index, path in scored[:limit] if score > 0]
-    if selected:
-        return selected
-    return visible_files[: min(limit, len(visible_files))]
-
-
-def _select_context_files(
-    repo_state: RepositoryAgentState,
-    task_state: TaskAgentState,
-    visible_files: List[str],
-    limit: int = 120,
-) -> List[str]:
-    if len(visible_files) <= limit:
-        return visible_files
-
-    selected: List[str] = []
-    seen = set()
-
-    def add(path: str) -> None:
-        if path in seen or len(selected) >= limit:
-            return
-        seen.add(path)
-        selected.append(path)
-
-    for path in _pick_candidate_files(repo_state, task_state, visible_files, limit=min(24, limit)):
-        add(path)
-
-    keywords = _task_keywords(repo_state, task_state)
-    favored_segments = (
-        "src/",
-        "app/",
-        "pages/",
-        "components/",
-        "routes/",
-        "templates/",
-        "static/",
-        "public/",
-        "docs/",
-    )
-    favored_extensions = (
-        ".tsx",
-        ".ts",
-        ".jsx",
-        ".js",
-        ".css",
-        ".scss",
-        ".html",
-        ".md",
-        ".py",
-    )
-
-    for path in visible_files:
-        lowered = path.lower()
-        if any(segment in lowered for segment in favored_segments) or lowered.endswith(favored_extensions):
-            add(path)
-        if len(selected) >= limit:
-            break
-
-    if keywords and len(selected) < limit:
-        for path in visible_files:
-            lowered = path.lower()
-            if any(keyword in lowered for keyword in keywords):
-                add(path)
-            if len(selected) >= limit:
-                break
-
-    if len(selected) < limit:
-        for path in visible_files:
-            add(path)
-            if len(selected) >= limit:
-                break
-
-    return selected
-
-
-def _task_keywords(repo_state: RepositoryAgentState, task_state: TaskAgentState) -> List[str]:
-    text = " ".join(
-        item
-        for item in [
-            repo_state.task_goal or "",
-            repo_state.original_user_prompt or "",
-            task_state.title,
-            task_state.description,
-            " ".join(task_state.scope),
-        ]
-        if item
-    ).lower()
-    words = re.findall(r"[a-z0-9_/-]{3,}", text)
-    stop_words = {
-        "the",
-        "and",
-        "for",
-        "with",
-        "this",
-        "that",
-        "you",
-        "implementation",
-        "approved",
-        "change",
-        "repository",
-        "context",
-        "phase",
-        "code",
-        "files",
-        "steps",
-    }
-    keywords: List[str] = []
-    seen = set()
-    for word in words:
-        normalized = word.strip("/-_")
-        if not normalized or normalized in stop_words or normalized in seen:
-            continue
-        seen.add(normalized)
-        keywords.append(normalized)
-    return keywords[:24]
 
 
 def _resolve_requested_file(requested: str, available_files: List[str]) -> Optional[str]:
@@ -490,39 +302,6 @@ def _build_patch_failure_error(patch_errors: List[str]) -> str:
     ) % last_error
 
 
-def _summarize_repo_files(files: List[str]) -> str:
-    if not files:
-        return "- No visible repository files."
-
-    lowered = [path.lower() for path in files]
-    frontend = [
-        path for path in files
-        if path.lower().endswith((".html", ".css", ".scss", ".tsx", ".jsx", ".ts", ".js"))
-        or any(segment in path.lower() for segment in ("/src/", "/pages/", "/components/", "/templates/", "/static/", "/public/"))
-    ]
-    docs = [path for path in files if path.lower().startswith("docs/") or path.lower().endswith(".md")]
-    python = [path for path in files if path.lower().endswith(".py")]
-    server_entries = [
-        path for path in files
-        if path.lower().endswith(".py") and path.lower().rsplit("/", 1)[-1] in {"main.py", "app.py", "server.py"}
-    ]
-    lines = [
-        "- Visible file count: %s" % len(files),
-        "- Frontend/template/static surface detected: %s" % ("yes" if frontend else "no"),
-        "- Python source detected: %s" % ("yes" if python else "no"),
-        "- Docs or markdown detected: %s" % ("yes" if docs else "no"),
-    ]
-    if frontend:
-        lines.append("- Example UI files: %s" % ", ".join(frontend[:5]))
-    if server_entries:
-        lines.append("- Example app entry files: %s" % ", ".join(server_entries[:5]))
-    elif python:
-        lines.append("- Example Python files: %s" % ", ".join(python[:5]))
-    if docs:
-        lines.append("- Example docs files: %s" % ", ".join(docs[:5]))
-    return "\n".join(lines)
-
-
 def _patch_scope(repo_state: RepositoryAgentState, task_state: TaskAgentState) -> List[str]:
     if repo_state.intent_type == "MODIFY_CODE" and task_state.title == "Implement approved repository change":
         return []
@@ -582,6 +361,16 @@ def _focus_paths_from_description(description: str) -> List[str]:
         elif lines:
             break
     return [line for line in lines if line]
+
+
+def _context_text_chunks(repo_state: RepositoryAgentState, task_state: TaskAgentState) -> List[str]:
+    return [
+        repo_state.task_goal or "",
+        repo_state.original_user_prompt or "",
+        task_state.title,
+        task_state.description,
+        " ".join(task_state.scope),
+    ]
 
 
 def _build_missing_diff_feedback(result_summary: Optional[str]) -> str:

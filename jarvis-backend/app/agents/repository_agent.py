@@ -15,6 +15,13 @@ from app.services.global_manager import GlobalManager
 from app.services.local_executor import LocalExecutor
 from app.services.memory_service import MemoryService
 from app.services.openai_client import LLMClient
+from app.services.repo_context_builder import (
+    build_file_content_sections,
+    pick_candidate_files,
+    render_repo_tree,
+    select_context_files,
+    summarize_repo_files,
+)
 from app.services.repository_registry import RepositoryRegistry
 
 
@@ -52,6 +59,7 @@ class RepositoryAgent:
 
         self.manager.emit_progress(self.state.repo_agent_id, "Intake started.")
         repo_context = self._build_repo_context()
+        self.state.planning_context = repo_context
         memory_context = self.memory_service.render_memory_for_llm(self.state.repo_agent_id).text
 
         self.state.phase = RepositoryAgentPhase.PLANNING
@@ -94,6 +102,7 @@ class RepositoryAgent:
         self.registry.save_agent_state(self.state)
 
         repo_context = self._build_repo_context()
+        self.state.planning_context = repo_context
         memory_context = self.memory_service.render_memory_for_llm(self.state.repo_agent_id).text
 
         explanation = None
@@ -146,6 +155,7 @@ class RepositoryAgent:
         self.state.plan_steps = []
         self.state.current_plan_step_index = 0
         self.state.execution_approved = False
+        self.state.planning_context = None
         self.state.task_agents = []
         self.state.changed_files = []
         self.state.test_results = []
@@ -445,6 +455,7 @@ class RepositoryAgent:
         self.registry.save_agent_state(self.state)
 
         repo_context = self._build_repo_context()
+        self.state.planning_context = repo_context
         memory_context = self.memory_service.render_memory_for_llm(self.state.repo_agent_id).text
 
         task_goal = self.state.task_goal or self.state.original_user_prompt or ""
@@ -906,8 +917,32 @@ class RepositoryAgent:
         return self.state
 
     def _build_repo_context(self) -> str:
-        files = self.executor.list_files(self.state.repo_path, max_files=160)
-        return "Repository files:\n%s" % "\n".join("- %s" % item for item in files[:160])
+        files = self.executor.list_files(self.state.repo_path, max_files=1200)
+        text_chunks = [
+            self.state.task_goal or "",
+            self.state.original_user_prompt or "",
+            " ".join(self.state.requirements or []),
+            " ".join(self.state.acceptance_criteria or []),
+        ]
+        context_files = select_context_files(text_chunks, files, limit=160)
+        candidate_files = pick_candidate_files(text_chunks, context_files, limit=10)
+        file_contents = build_file_content_sections(
+            repo_path=self.state.repo_path,
+            files=candidate_files,
+            read_file=self.executor.read_file,
+            max_files=10,
+            max_chars=5000,
+            max_lines=140,
+        )
+
+        sections = [
+            "Repository capability summary:\n%s" % summarize_repo_files(context_files),
+            "Visible files:\n%s" % "\n".join("- %s" % item for item in context_files[:160]),
+            "Repository tree:\n%s" % render_repo_tree(context_files[:160]),
+        ]
+        if file_contents:
+            sections.append("Initial planning file contents:\n%s" % file_contents)
+        return "\n\n".join(section for section in sections if section.strip())
 
 
 def _looks_like_approval(response: str) -> bool:

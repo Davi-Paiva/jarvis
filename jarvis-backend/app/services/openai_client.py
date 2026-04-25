@@ -433,12 +433,14 @@ class OpenAIAgentsClient(FakeLLMClient):
             "- When mentioning files in descriptions, use natural language\n"
             "- For example, say 'the client file in the services folder' not 'services/client.py'\n"
             "- Explain what will be changed and why in plain language\n"
+            "- Use the repository context and included file contents to anchor the steps to real modules and surfaces\n"
             "- In the 'scope' array, include actual file paths or patterns for technical processing\n\n"
             "Task goal: %s\n"
             "Requirements: %s\n"
             "Plan text:\n%s\n\n"
+            "Repository context:\n%s\n\n"
             "Return a JSON array of step objects with conversational descriptions:"
-        ) % (state.task_goal, state.requirements, plan)
+        ) % (state.task_goal, state.requirements, plan, state.planning_context or "")
         parsed = await self._run_json_agent(
             "Task splitter agent",
             prompt,

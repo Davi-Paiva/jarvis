@@ -32,6 +32,7 @@ class RepositoryAgentState(BaseModel):
     requirements: List[str] = Field(default_factory=list)
     acceptance_criteria: List[str] = Field(default_factory=list)
     plan: Optional[str] = None
+    planning_context: Optional[str] = None
     # Conversational flow v2 keeps branch intent separate from the active branch_name.
     branch_decision: Optional[str] = None
     requested_branch_name: Optional[str] = None
@@ -52,4 +53,3 @@ class RepositoryAgentState(BaseModel):
 
     def touch(self) -> None:
         self.updated_at = utc_now()
-
