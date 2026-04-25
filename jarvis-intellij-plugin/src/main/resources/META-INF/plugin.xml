@@ -19,6 +19,15 @@
 
     <actions>
         <action
+            id="Jarvis.OpenImportDocumentation"
+            class="com.jarvis.intellij.features.documentation.OpenImportDocumentationAction"
+            text="Jarvis: Open Import Documentation"
+            description="Open documentation for the import under the mouse or caret">
+            <keyboard-shortcut keymap="$default" first-keystroke="ctrl shift z" />
+            <keyboard-shortcut keymap="Mac OS X" first-keystroke="ctrl shift z" />
+            <add-to-group group-id="EditorPopupMenu" anchor="last" />
+        </action>
+        <action
             id="Jarvis.ShowDependencyDocumentation"
             class="com.jarvis.intellij.features.documentation.ShowDependencyDocumentationAction"
             text="Jarvis: Dependency Documentation"
