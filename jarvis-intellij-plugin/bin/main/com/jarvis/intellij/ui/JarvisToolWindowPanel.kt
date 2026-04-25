@@ -175,7 +175,7 @@ class JarvisToolWindowPanel(private val project: Project) : JPanel(BorderLayout(
         renderDiagramHtml(
             diagramMessageHtml(
                 title = "Building Diagram",
-                message = "Computing project graph, comparing git state, and preparing the cached view.",
+                message = "Grouping the codebase into architecture areas and rendering a Mermaid diagram.",
             ),
         )
 
@@ -184,9 +184,9 @@ class JarvisToolWindowPanel(private val project: Project) : JPanel(BorderLayout(
                 viewDiagramButton.isEnabled = true
                 renderDiagramHtml(result.html)
                 statusLabel.text = if (result.fromCache) {
-                    "Loaded cached diagram (${result.nodeCount} files, ${result.edgeCount} relationships)."
+                    "Loaded cached diagram (${result.nodeCount} groups, ${result.edgeCount} relationships)."
                 } else {
-                    "Updated diagram cache (${result.nodeCount} files, ${result.edgeCount} relationships)."
+                    "Updated diagram cache (${result.nodeCount} groups, ${result.edgeCount} relationships)."
                 }
             },
             onError = { message ->

@@ -93,7 +93,7 @@ class ProjectAnalysisCoordinator(
     }
 
     companion object {
-        private const val DIAGRAM_CACHE_VERSION = "diagram-v2-structural"
+        private const val DIAGRAM_CACHE_VERSION = "diagram-v4-mermaid-safe"
     }
 
     private fun <T> runAsync(
