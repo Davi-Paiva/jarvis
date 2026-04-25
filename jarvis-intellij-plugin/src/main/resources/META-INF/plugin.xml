@@ -16,4 +16,16 @@
             factoryClass="com.jarvis.intellij.toolwindow.JarvisToolWindowFactory"
             canCloseContents="false" />
     </extensions>
+
+    <actions>
+        <action
+            id="Jarvis.ShowDependencyDocumentation"
+            class="com.jarvis.intellij.features.documentation.ShowDependencyDocumentationAction"
+            text="Jarvis: Dependency Documentation"
+            description="Show all project dependencies and open official docs in one click">
+            <keyboard-shortcut keymap="$default" first-keystroke="ctrl alt shift D" />
+            <keyboard-shortcut keymap="Mac OS X" first-keystroke="meta alt shift D" />
+            <add-to-group group-id="ToolsMenu" anchor="last" />
+        </action>
+    </actions>
 </idea-plugin>
