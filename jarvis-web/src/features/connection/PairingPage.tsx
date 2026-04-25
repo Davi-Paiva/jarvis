@@ -257,7 +257,8 @@ export function PairingPage({ onConnect }: Props) {
           fontSize: 11,
           letterSpacing: '0.28em',
           textTransform: 'uppercase',
-          color: 'rgba(0,242,255,0.4)',
+          color: 'rgba(0,242,255,0.75)',
+          textShadow: '0 0 8px rgba(0,242,255,0.3)',
         }}>
           AI Control Interface
         </div>
@@ -269,7 +270,8 @@ export function PairingPage({ onConnect }: Props) {
           fontSize: 10,
           letterSpacing: '0.22em',
           textTransform: 'uppercase',
-          color: 'rgba(0,242,255,0.35)',
+          color: 'rgba(0,242,255,0.7)',
+          textShadow: '0 0 6px rgba(0,242,255,0.25)',
           marginBottom: 4,
         }}>
           Enter Pairing Code
@@ -307,7 +309,7 @@ export function PairingPage({ onConnect }: Props) {
           {digits.map((d, i) => (
             <div key={i} style={{
               width: 4, height: 4, borderRadius: '50%',
-              background: d ? '#00f2ff' : 'rgba(0,242,255,0.15)',
+              background: d ? '#00f2ff' : 'rgba(0,242,255,0.35)',
               boxShadow: d ? '0 0 6px #00f2ff' : 'none',
               transition: 'background 0.2s, box-shadow 0.2s',
             }} />
@@ -344,7 +346,8 @@ export function PairingPage({ onConnect }: Props) {
               style={{
                 fontSize: 11,
                 letterSpacing: '0.18em',
-                color: 'rgba(0,242,255,0.25)',
+                color: 'rgba(0,242,255,0.65)',
+                textShadow: '0 0 6px rgba(0,242,255,0.2)',
               }}
             >
               Find code in the Jarvis desktop app
