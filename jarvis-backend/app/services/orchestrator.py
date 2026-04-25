@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import unicodedata
 from typing import Any, List, Optional, Tuple
 
 from app.agents.repository_agent import RepositoryAgent
 from app.config import Settings
 from app.models.repository import RepositoryAgentState
 from app.models.schemas import AgentStateOutput, CreateRepoAgentOutput
+from app.models.state import RepositoryAgentPhase
 from app.models.turns import TurnRequest
 from app.models.voice_protocol import PendingTurnSummary, RepoSummary
 from app.services.global_manager import GlobalManager
@@ -125,6 +127,46 @@ class JarvisOrchestrator:
             next_turn=self.manager.get_next_turn(updated.user_id),
         )
 
+    async def handle_user_message(
+        self,
+        repo_agent_id: str,
+        message: str,
+        acceptance_criteria: Optional[List[str]] = None,
+    ) -> AgentStateOutput:
+        state = self.registry.get_agent_state(repo_agent_id)
+        agent = self._repository_agent(state)
+        intent_type = self._classify_user_intent(message)
+
+        state.intent_type = intent_type
+        state.original_user_prompt = message
+        self.registry.save_agent_state(state)
+
+        if intent_type == "EXPLAIN_CODE":
+            if hasattr(agent, "answer_code_question"):
+                updated = await agent.answer_code_question(message)
+            else:
+                # Temporary fallback until RepositoryAgent.answer_code_question lands.
+                state.phase = RepositoryAgentPhase.ANSWERING_QUESTION
+                state.last_explanation = (
+                    "Question received, but the explanation flow is not implemented yet."
+                )
+                self.registry.save_agent_state(state)
+                updated = state
+            return AgentStateOutput(
+                agent=updated,
+                next_turn=self.manager.get_next_turn(updated.user_id),
+            )
+
+        if hasattr(agent, "start_modification_flow"):
+            updated = await agent.start_modification_flow(message, acceptance_criteria or [])
+        else:
+            # TODO: replace this compatibility fallback once RepositoryAgent.start_modification_flow exists.
+            updated = await agent.start_task(message, acceptance_criteria=acceptance_criteria)
+        return AgentStateOutput(
+            agent=updated,
+            next_turn=self.manager.get_next_turn(updated.user_id),
+        )
+
     async def submit_user_response(
         self,
         turn_id: str,
@@ -209,10 +251,101 @@ class JarvisOrchestrator:
             graph_checkpointer=self.graph_checkpointer,
         )
 
+    def _classify_user_intent(self, message: str) -> str:
+        normalized = _normalize_intent_text(message)
+        explain_markers = [
+            "explain this",
+            "explain how",
+            "what does this do",
+            "what does this file do",
+            "what does",
+            "how does this work",
+            "how does",
+            "why does this happen",
+            "why does",
+            "where is this implemented",
+            "where is this defined",
+            "where is",
+            "describe this",
+            "summarize this",
+            "summarize",
+            "help me understand this",
+            "help me understand",
+            "walk me through this code",
+            "walk me through",
+            "explica",
+            "explicame",
+            "que hace",
+            "como funciona",
+            "por que",
+            "donde esta",
+            "describe",
+            "resumen",
+            "ayudame a entender",
+        ]
+        modify_markers = [
+            "change this",
+            "modify this",
+            "implement this",
+            "add support for",
+            "add a new",
+            "fix this",
+            "fix the bug",
+            "create",
+            "refactor",
+            "remove",
+            "delete",
+            "update",
+            "make it so",
+            "i want to change",
+            "can you add",
+            "can you fix",
+            "let's implement",
+            "modifica",
+            "cambia",
+            "implementa",
+            "anade",
+            "agrega",
+            "arregla",
+            "corrige",
+            "fix",
+            "crea",
+            "refactoriza",
+            "elimina",
+            "borra",
+        ]
+        has_modify_signal = any(marker in normalized for marker in modify_markers)
+        has_explain_signal = any(marker in normalized for marker in explain_markers)
+
+        if has_modify_signal:
+            return "MODIFY_CODE"
+        if has_explain_signal:
+            return "EXPLAIN_CODE"
+        return "MODIFY_CODE"
+
 
 def _status_from_phase(phase: str) -> str:
-    if phase == "WAITING_APPROVAL":
+    if phase in {
+        "WAITING_APPROVAL",
+        "BRANCH_PERMISSION",
+        "BRANCH_NAME",
+        "BRANCH_CONFIRMATION",
+        "PLAN_STEP_REVIEW",
+        "WAITING_EXECUTION_APPROVAL",
+    }:
         return "waiting_approval"
-    if phase in {"PLANNING", "EXECUTING", "FINALIZING", "WAITING_FOR_USER"}:
+    if phase in {
+        "INTAKE",
+        "PLANNING",
+        "ANSWERING_QUESTION",
+        "EXECUTING",
+        "FINALIZING",
+        "WAITING_FOR_USER",
+    }:
         return "running"
     return "idle"
+
+
+def _normalize_intent_text(value: str) -> str:
+    normalized = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
+    return " ".join(normalized.lower().split())

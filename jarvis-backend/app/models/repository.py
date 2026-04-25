@@ -27,12 +27,24 @@ class RepositoryAgentState(BaseModel):
     phase: RepositoryAgentPhase = RepositoryAgentPhase.INTAKE
     thread_id: str
     task_goal: Optional[str] = None
+    intent_type: Optional[str] = None
+    original_user_prompt: Optional[str] = None
     requirements: List[str] = Field(default_factory=list)
     acceptance_criteria: List[str] = Field(default_factory=list)
     plan: Optional[str] = None
+    # Conversational flow v2 keeps branch intent separate from the active branch_name.
+    branch_decision: Optional[str] = None
+    requested_branch_name: Optional[str] = None
+    confirmed_branch_name: Optional[str] = None
+    branch_created: bool = False
+    # Conversational flow v2 stores step-by-step review state independently from plan.
+    plan_steps: List[dict] = Field(default_factory=list)
+    current_plan_step_index: int = 0
+    execution_approved: bool = False
     task_agents: List[str] = Field(default_factory=list)
     changed_files: List[str] = Field(default_factory=list)
     test_results: List[str] = Field(default_factory=list)
+    last_explanation: Optional[str] = None
     final_report: Optional[str] = None
     last_error: Optional[str] = None
     created_at: datetime = Field(default_factory=utc_now)

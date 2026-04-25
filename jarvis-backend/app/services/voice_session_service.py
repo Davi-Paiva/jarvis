@@ -424,10 +424,9 @@ class VoiceSessionService:
             )
         ]
 
-        result = await self.orchestrator.start_task(
-            runtime.active_repo_agent_id or "",
-            text,
-            acceptance_criteria=[],
+        result = await self.orchestrator.handle_user_message(
+            repo_agent_id=runtime.active_repo_agent_id or "",
+            message=text,
         )
         if result.next_turn is not None:
             runtime.announced_turn_ids.add(result.next_turn.id)
@@ -731,6 +730,18 @@ class VoiceSessionService:
             return _shorten(cleaned, 260)
         if turn.type == TurnType.BLOCKING_QUESTION:
             return "I need your input for %s. %s" % (repo_name, _shorten(cleaned, 220))
+        if turn.type == TurnType.EXPLANATION:
+            return _shorten(cleaned, 260)
+        if turn.type == TurnType.BRANCH_PERMISSION:
+            return _shorten(cleaned, 260)
+        if turn.type == TurnType.BRANCH_NAME:
+            return _shorten(cleaned, 260)
+        if turn.type == TurnType.BRANCH_CONFIRMATION:
+            return _shorten(cleaned, 260)
+        if turn.type == TurnType.PLAN_STEP_REVIEW:
+            return _shorten(cleaned, 260)
+        if turn.type == TurnType.EXECUTION_APPROVAL:
+            return _shorten(cleaned, 260)
         return _shorten(cleaned, 220)
 
     def _maybe_prompt_for_active_turn(self, runtime: VoiceSessionRuntime) -> List[ServerToClientMessage]:
@@ -798,6 +809,10 @@ def _shorten(value: str, limit: int) -> str:
 def _status_from_phase(phase: str) -> str:
     if phase == "WAITING_APPROVAL":
         return "waiting_approval"
-    if phase in {"PLANNING", "EXECUTING", "FINALIZING", "WAITING_FOR_USER"}:
+    if phase in {"BRANCH_PERMISSION", "BRANCH_NAME", "BRANCH_CONFIRMATION", "PLAN_STEP_REVIEW", "WAITING_EXECUTION_APPROVAL"}:
+        return "waiting_approval"
+    if phase in {"PLANNING", "EXECUTING", "FINALIZING", "WAITING_FOR_USER", "ANSWERING_QUESTION", "INTAKE"}:
         return "running"
+    if phase in {"DONE", "FAILED"}:
+        return "idle"
     return "idle"

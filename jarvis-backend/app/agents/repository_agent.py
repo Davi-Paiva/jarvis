@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+import unicodedata
 from typing import Any, List, Optional
 
 from app.agents.task_agent import TaskAgent
@@ -84,11 +86,103 @@ class RepositoryAgent:
         )
         return self.state
 
+    async def answer_code_question(self, message: str) -> RepositoryAgentState:
+        self.state.intent_type = "EXPLAIN_CODE"
+        self.state.original_user_prompt = message
+        self.state.phase = RepositoryAgentPhase.ANSWERING_QUESTION
+        self.registry.save_agent_state(self.state)
+
+        repo_context = self._build_repo_context()
+        memory_context = self.memory_service.render_memory_for_llm(self.state.repo_agent_id).text
+
+        explanation = None
+        if hasattr(self.llm_client, "answer_code_question"):
+            explanation_method = getattr(self.llm_client, "answer_code_question")
+            explanation = await explanation_method(
+                repo_state=self.state,
+                question=message,
+                repo_context=repo_context,
+                memory_context=memory_context,
+            )
+        if not explanation:
+            explanation = (
+                "I can help explain the repository at `%s`, but there is not a dedicated LLM "
+                "explanation flow implemented yet. I gathered repository and memory context for this "
+                "question, so the next step is to wire a specialized explanation responder."
+            ) % self.state.repo_path
+
+        self.state.last_explanation = explanation
+        self.manager.enqueue_turn(
+            TurnRequest(
+                user_id=self.state.user_id,
+                agent_id=self.state.repo_agent_id,
+                repo_agent_id=self.state.repo_agent_id,
+                type=TurnType.EXPLANATION,
+                priority=40,
+                message=explanation,
+                context="RepositoryAgent answered a code question.",
+                requires_user_response=False,
+            )
+        )
+        self.state.phase = RepositoryAgentPhase.INTAKE
+        self.registry.save_agent_state(self.state)
+        return self.state
+
+    async def start_modification_flow(
+        self,
+        message: str,
+        acceptance_criteria: Optional[List[str]] = None,
+    ) -> RepositoryAgentState:
+        self.manager.acquire_intake_lock(self.state.repo_agent_id)
+        self.state.intent_type = "MODIFY_CODE"
+        self.state.original_user_prompt = message
+        self.state.task_goal = message
+        self.state.acceptance_criteria = acceptance_criteria or []
+        self.state.branch_decision = None
+        self.state.requested_branch_name = None
+        self.state.confirmed_branch_name = None
+        self.state.branch_created = False
+        self.state.plan_steps = []
+        self.state.current_plan_step_index = 0
+        self.state.execution_approved = False
+        self.state.phase = RepositoryAgentPhase.BRANCH_PERMISSION
+        self.registry.save_agent_state(self.state)
+        self.memory_service.record_task_started(self.state)
+
+        self.manager.enqueue_turn(
+            TurnRequest(
+                user_id=self.state.user_id,
+                agent_id=self.state.repo_agent_id,
+                repo_agent_id=self.state.repo_agent_id,
+                type=TurnType.BRANCH_PERMISSION,
+                priority=80,
+                message=(
+                    "This requires code changes. Do you want me to create a new branch for these "
+                    "changes, or should I work on the current branch?"
+                ),
+                context=(
+                    "RepositoryAgent is asking whether to create a branch before modifying code."
+                ),
+                requires_user_response=True,
+            )
+        )
+        return self.state
+
     async def handle_user_response(
         self,
         turn: TurnRequest,
         response: TurnResponse,
     ) -> RepositoryAgentState:
+        if turn.type == TurnType.BRANCH_PERMISSION:
+            return await self._handle_branch_permission_response(response.response)
+        if turn.type == TurnType.BRANCH_NAME:
+            return self._handle_branch_name_response(response.response)
+        if turn.type == TurnType.BRANCH_CONFIRMATION:
+            return await self._handle_branch_confirmation_response(turn, response.response)
+        if turn.type == TurnType.PLAN_STEP_REVIEW:
+            return await self._handle_plan_step_review(turn, response.response)
+        if turn.type == TurnType.EXECUTION_APPROVAL:
+            return await self._handle_execution_approval(response.response)
         if turn.type == TurnType.APPROVAL:
             approved = response.approved
             if approved is None:
@@ -99,47 +193,126 @@ class RepositoryAgent:
         return self.state
 
     async def execute_approved_plan(self) -> RepositoryAgentState:
+        # Check if we're in the new conversational flow with plan steps
+        if self.state.plan_steps:
+            # New flow with user-approved plan steps
+            if self.state.intent_type == "MODIFY_CODE" and not self.state.execution_approved:
+                # Haven't received explicit approval yet
+                self.state.phase = RepositoryAgentPhase.WAITING_EXECUTION_APPROVAL
+                self.registry.save_agent_state(self.state)
+                self._enqueue_turn(
+                    turn_type=TurnType.EXECUTION_APPROVAL,
+                    priority=80,
+                    message="The plan has not been approved for execution yet. Do you want me to execute it now?",
+                    context="RepositoryAgent is waiting for execution approval before proceeding.",
+                    requires_user_response=True,
+                )
+                return self.state
+            
+            # Filter approved steps only
+            approved_steps = [step for step in self.state.plan_steps if step.get("status") == "APPROVED"]
+            
+            if not approved_steps:
+                # No steps were approved
+                self.state.phase = RepositoryAgentPhase.PLAN_STEP_REVIEW
+                self.registry.save_agent_state(self.state)
+                self._enqueue_turn(
+                    turn_type=TurnType.PLAN_STEP_REVIEW,
+                    priority=70,
+                    message="No plan steps were approved for execution. Please review and approve the steps before proceeding.",
+                    context="RepositoryAgent found no approved steps to execute.",
+                    requires_user_response=True,
+                    metadata={"step_index": 0},
+                )
+                return self.state
+            
+            # Use approved steps directly (new conversational flow)
+            task_plan_steps = approved_steps
+        else:
+            # Old flow: use split_tasks for backward compatibility
+            task_plan_steps = None
+        
         self.manager.release_intake_lock(self.state.repo_agent_id)
         self.state.phase = RepositoryAgentPhase.EXECUTING
         self.registry.save_agent_state(self.state)
         self.manager.emit_progress(self.state.repo_agent_id, "Plan approved. Execution started.")
 
-        task_plan = await self.llm_client.split_tasks(self.state, self.state.plan or "")
-        task_states: List[TaskAgentState] = []
-        for task_item in task_plan:
-            task_state = TaskAgentState(
-                repo_agent_id=self.state.repo_agent_id,
-                title=task_item.title,
-                description=task_item.description,
-                scope=task_item.scope,
-            )
-            self.registry.save_task_state(task_state)
-            self.state.task_agents.append(task_state.task_agent_id)
-            self.registry.save_agent_state(self.state)
-
-            task_agent = TaskAgent(
-                state=task_state,
-                registry=self.registry,
-                executor=self.executor,
-                llm_client=self.llm_client,
-                memory_service=self.memory_service,
-                graph_checkpointer=self.graph_checkpointer,
-            )
-            completed_task = await task_agent.execute(self.state)
-            task_states.append(completed_task)
-            self.state.changed_files.extend(
-                item for item in completed_task.changed_files if item not in self.state.changed_files
-            )
-            self.state.test_results.extend(completed_task.test_results)
-            if completed_task.status == TaskAgentStatus.FAILED:
-                self.state.phase = RepositoryAgentPhase.FAILED
-                self.state.last_error = completed_task.last_error
-                self.registry.save_agent_state(self.state)
-                self.manager.emit_failed(
-                    self.state.repo_agent_id,
-                    completed_task.last_error or "Task agent failed.",
+        # Determine task plan: either from approved steps or by calling LLM
+        if task_plan_steps is not None:
+            # New flow: create tasks directly from approved plan steps
+            task_states: List[TaskAgentState] = []
+            for step in task_plan_steps:
+                task_state = TaskAgentState(
+                    repo_agent_id=self.state.repo_agent_id,
+                    title=step.get("title", "Task"),
+                    description=step.get("description", ""),
+                    scope=step.get("scope", []),
                 )
-                return self.state
+                self.registry.save_task_state(task_state)
+                self.state.task_agents.append(task_state.task_agent_id)
+                self.registry.save_agent_state(self.state)
+
+                task_agent = TaskAgent(
+                    state=task_state,
+                    registry=self.registry,
+                    executor=self.executor,
+                    llm_client=self.llm_client,
+                    memory_service=self.memory_service,
+                    graph_checkpointer=self.graph_checkpointer,
+                )
+                completed_task = await task_agent.execute(self.state)
+                task_states.append(completed_task)
+                self.state.changed_files.extend(
+                    item for item in completed_task.changed_files if item not in self.state.changed_files
+                )
+                self.state.test_results.extend(completed_task.test_results)
+                if completed_task.status == TaskAgentStatus.FAILED:
+                    self.state.phase = RepositoryAgentPhase.FAILED
+                    self.state.last_error = completed_task.last_error
+                    self.registry.save_agent_state(self.state)
+                    self.manager.emit_failed(
+                        self.state.repo_agent_id,
+                        completed_task.last_error or "Task agent failed.",
+                    )
+                    return self.state
+        else:
+            # Old flow: split tasks using LLM
+            task_plan = await self.llm_client.split_tasks(self.state, self.state.plan or "")
+            task_states: List[TaskAgentState] = []
+            for task_item in task_plan:
+                task_state = TaskAgentState(
+                    repo_agent_id=self.state.repo_agent_id,
+                    title=task_item.title,
+                    description=task_item.description,
+                    scope=task_item.scope,
+                )
+                self.registry.save_task_state(task_state)
+                self.state.task_agents.append(task_state.task_agent_id)
+                self.registry.save_agent_state(self.state)
+
+                task_agent = TaskAgent(
+                    state=task_state,
+                    registry=self.registry,
+                    executor=self.executor,
+                    llm_client=self.llm_client,
+                    memory_service=self.memory_service,
+                    graph_checkpointer=self.graph_checkpointer,
+                )
+                completed_task = await task_agent.execute(self.state)
+                task_states.append(completed_task)
+                self.state.changed_files.extend(
+                    item for item in completed_task.changed_files if item not in self.state.changed_files
+                )
+                self.state.test_results.extend(completed_task.test_results)
+                if completed_task.status == TaskAgentStatus.FAILED:
+                    self.state.phase = RepositoryAgentPhase.FAILED
+                    self.state.last_error = completed_task.last_error
+                    self.registry.save_agent_state(self.state)
+                    self.manager.emit_failed(
+                        self.state.repo_agent_id,
+                        completed_task.last_error or "Task agent failed.",
+                    )
+                    return self.state
 
         self.state.phase = RepositoryAgentPhase.FINALIZING
         self.registry.save_agent_state(self.state)
@@ -159,6 +332,15 @@ class RepositoryAgent:
             )
             task_agent.mark_dead()
 
+        # Prepare completion message
+        if self.state.final_report:
+            completion_message = (
+                f"{self.state.final_report}\n\n"
+                "You can review and approve the changes in the desktop app."
+            )
+        else:
+            completion_message = "I've completed the task. You can review and approve the changes in the desktop app."
+
         self.manager.enqueue_turn(
             TurnRequest(
                 user_id=self.state.user_id,
@@ -166,13 +348,326 @@ class RepositoryAgent:
                 repo_agent_id=self.state.repo_agent_id,
                 type=TurnType.COMPLETION,
                 priority=40,
-                message=self.state.final_report or "Repository task completed.",
+                message=completion_message,
                 context="RepositoryAgent final report.",
                 requires_user_response=False,
             )
         )
         self.manager.emit_completed(self.state.repo_agent_id, "Execution completed.")
         return self.state
+
+    async def _handle_branch_permission_response(self, text: str) -> RepositoryAgentState:
+        if _looks_like_yes(text):
+            self.state.branch_decision = "create_new"
+            self.state.phase = RepositoryAgentPhase.BRANCH_NAME
+            self.registry.save_agent_state(self.state)
+            self._enqueue_turn(
+                turn_type=TurnType.BRANCH_NAME,
+                priority=80,
+                message="Great. What name should I use for the new branch?",
+                context="RepositoryAgent is asking for the new branch name.",
+                requires_user_response=True,
+            )
+            return self.state
+
+        if _looks_like_no(text):
+            self.state.branch_decision = "use_current"
+            self.state.requested_branch_name = None
+            self.state.confirmed_branch_name = None
+            self.state.branch_created = False
+            self.registry.save_agent_state(self.state)
+            return await self._start_stepwise_planning()
+
+        self.state.phase = RepositoryAgentPhase.BRANCH_PERMISSION
+        self.registry.save_agent_state(self.state)
+        self._enqueue_turn(
+            turn_type=TurnType.BRANCH_PERMISSION,
+            priority=80,
+            message=(
+                "I am not sure whether you want a new branch. Do you want me to create a new "
+                "branch, or should I use the current branch?"
+            ),
+            context="RepositoryAgent is clarifying the branch creation preference.",
+            requires_user_response=True,
+        )
+        return self.state
+
+    def _handle_branch_name_response(self, text: str) -> RepositoryAgentState:
+        normalized_name = _normalize_branch_name(text)
+        if not normalized_name:
+            self.state.phase = RepositoryAgentPhase.BRANCH_NAME
+            self.registry.save_agent_state(self.state)
+            self._enqueue_turn(
+                turn_type=TurnType.BRANCH_NAME,
+                priority=80,
+                message="I could not get a valid branch name. What branch name should I use?",
+                context="RepositoryAgent needs a valid branch name.",
+                requires_user_response=True,
+            )
+            return self.state
+
+        self.state.requested_branch_name = normalized_name
+        self.state.phase = RepositoryAgentPhase.BRANCH_CONFIRMATION
+        self.registry.save_agent_state(self.state)
+        self._enqueue_turn(
+            turn_type=TurnType.BRANCH_CONFIRMATION,
+            priority=80,
+            message="I'm going to create the branch %s. Is that correct?" % normalized_name,
+            context=(
+                "RepositoryAgent is confirming the transcribed branch name before creating it."
+            ),
+            requires_user_response=True,
+            metadata={"branch_name": normalized_name},
+        )
+        return self.state
+
+    async def _handle_branch_confirmation_response(
+        self,
+        turn: TurnRequest,
+        text: str,
+    ) -> RepositoryAgentState:
+        if _looks_like_no(text):
+            self.state.phase = RepositoryAgentPhase.BRANCH_NAME
+            self.registry.save_agent_state(self.state)
+            self._enqueue_turn(
+                turn_type=TurnType.BRANCH_NAME,
+                priority=80,
+                message="Okay. What branch name should I use instead?",
+                context="RepositoryAgent is requesting a corrected branch name.",
+                requires_user_response=True,
+            )
+            return self.state
+
+        if _looks_like_yes(text):
+            branch_name = str(turn.metadata.get("branch_name") or self.state.requested_branch_name or "")
+            try:
+                code, _stdout, stderr = await self.executor.create_branch(self.state.repo_path, branch_name)
+                if code != 0:
+                    raise RuntimeError(stderr.strip() or "Branch creation failed.")
+            except Exception as exc:
+                self.state.last_error = str(exc)
+                self.state.phase = RepositoryAgentPhase.BRANCH_NAME
+                self.registry.save_agent_state(self.state)
+                self._enqueue_turn(
+                    turn_type=TurnType.BRANCH_NAME,
+                    priority=80,
+                    message="I couldn't create that branch. Please give me another branch name.",
+                    context="RepositoryAgent failed to create the requested branch.",
+                    requires_user_response=True,
+                )
+                return self.state
+
+            self.state.confirmed_branch_name = branch_name
+            self.state.branch_name = branch_name
+            self.state.branch_created = True
+            self.registry.save_agent_state(self.state)
+            return await self._start_stepwise_planning()
+
+        normalized_name = _normalize_branch_name(text)
+        if normalized_name:
+            self.state.requested_branch_name = normalized_name
+            self.state.phase = RepositoryAgentPhase.BRANCH_CONFIRMATION
+            self.registry.save_agent_state(self.state)
+            self._enqueue_turn(
+                turn_type=TurnType.BRANCH_CONFIRMATION,
+                priority=80,
+                message="I'm going to create the branch %s. Is that correct?" % normalized_name,
+                context=(
+                    "RepositoryAgent is confirming the transcribed branch name before creating it."
+                ),
+                requires_user_response=True,
+                metadata={"branch_name": normalized_name},
+            )
+            return self.state
+
+        self.state.phase = RepositoryAgentPhase.BRANCH_CONFIRMATION
+        self.registry.save_agent_state(self.state)
+        self._enqueue_turn(
+            turn_type=TurnType.BRANCH_CONFIRMATION,
+            priority=80,
+            message=(
+                "I could not tell whether you confirmed the branch name. Is it correct, or do you want another name?"
+            ),
+            context="RepositoryAgent is clarifying the branch name confirmation.",
+            requires_user_response=True,
+            metadata={"branch_name": self.state.requested_branch_name or ""},
+        )
+        return self.state
+
+    async def _start_stepwise_planning(self) -> RepositoryAgentState:
+        self.state.phase = RepositoryAgentPhase.PLANNING
+        self.registry.save_agent_state(self.state)
+
+        repo_context = self._build_repo_context()
+        memory_context = self.memory_service.render_memory_for_llm(self.state.repo_agent_id).text
+
+        task_goal = self.state.task_goal or self.state.original_user_prompt or ""
+        self.state.requirements = await self.llm_client.extract_requirements(
+            task_goal=task_goal,
+            acceptance_criteria=self.state.acceptance_criteria,
+            repo_context=repo_context,
+            memory_context=memory_context,
+        )
+        self.state.plan = await self.llm_client.create_plan(
+            state=self.state,
+            repo_context=repo_context,
+            memory_context=memory_context,
+        )
+        self.registry.save_agent_state(self.state)
+
+        try:
+            task_plan = await self.llm_client.split_tasks(self.state, self.state.plan or "")
+            plan_steps = []
+            for idx, task_item in enumerate(task_plan):
+                plan_steps.append(
+                    {
+                        "index": idx,
+                        "title": task_item.title,
+                        "description": task_item.description,
+                        "scope": task_item.scope or [],
+                        "status": "PROPOSED",
+                        "user_feedback": [],
+                    }
+                )
+        except Exception:
+            plan_steps = [
+                {
+                    "index": 0,
+                    "title": "Implement requested change",
+                    "description": task_goal,
+                    "scope": [],
+                    "status": "PROPOSED",
+                    "user_feedback": [],
+                }
+            ]
+
+        self.state.plan_steps = plan_steps
+        self.state.current_plan_step_index = 0
+        self.state.execution_approved = False
+        self.state.phase = RepositoryAgentPhase.PLAN_STEP_REVIEW
+        self.registry.save_agent_state(self.state)
+
+        if plan_steps:
+            first_step = plan_steps[0]
+            message = (
+                f"Step 1: {first_step['title']}. {first_step['description']}. "
+                "Does this look good, or would you like to change this step?"
+            )
+            self._enqueue_turn(
+                turn_type=TurnType.PLAN_STEP_REVIEW,
+                priority=70,
+                message=message,
+                context="RepositoryAgent is asking the user to review the first plan step.",
+                requires_user_response=True,
+                metadata={"step_index": 0},
+            )
+        else:
+            self.state.phase = RepositoryAgentPhase.WAITING_EXECUTION_APPROVAL
+            self.registry.save_agent_state(self.state)
+            self._enqueue_turn(
+                turn_type=TurnType.EXECUTION_APPROVAL,
+                priority=80,
+                message="No plan steps were generated. Do you want me to proceed with the task?",
+                context="RepositoryAgent is waiting for execution approval after empty plan.",
+                requires_user_response=True,
+            )
+
+        return self.state
+
+    async def _handle_plan_step_review(self, turn: TurnRequest, text: str) -> RepositoryAgentState:
+        step_index = turn.metadata.get("step_index", self.state.current_plan_step_index)
+        
+        if step_index >= len(self.state.plan_steps):
+            step_index = len(self.state.plan_steps) - 1
+        
+        if _looks_like_approval(text):
+            if step_index < len(self.state.plan_steps):
+                self.state.plan_steps[step_index]["status"] = "APPROVED"
+            
+            self.state.current_plan_step_index = step_index + 1
+            self.registry.save_agent_state(self.state)
+            
+            if self.state.current_plan_step_index < len(self.state.plan_steps):
+                next_step = self.state.plan_steps[self.state.current_plan_step_index]
+                step_num = self.state.current_plan_step_index + 1
+                message = (
+                    f"Step {step_num}: {next_step['title']}. {next_step['description']}. "
+                    "Does this look good, or would you like to change this step?"
+                )
+                self._enqueue_turn(
+                    turn_type=TurnType.PLAN_STEP_REVIEW,
+                    priority=70,
+                    message=message,
+                    context="RepositoryAgent is asking the user to review the next plan step.",
+                    requires_user_response=True,
+                    metadata={"step_index": self.state.current_plan_step_index},
+                )
+                self.state.phase = RepositoryAgentPhase.PLAN_STEP_REVIEW
+                self.registry.save_agent_state(self.state)
+            else:
+                self.state.phase = RepositoryAgentPhase.WAITING_EXECUTION_APPROVAL
+                self.registry.save_agent_state(self.state)
+                self._enqueue_turn(
+                    turn_type=TurnType.EXECUTION_APPROVAL,
+                    priority=80,
+                    message="All plan steps are approved. Do you want me to execute the plan now?",
+                    context="RepositoryAgent is waiting for final execution approval.",
+                    requires_user_response=True,
+                )
+            return self.state
+        else:
+            if step_index < len(self.state.plan_steps):
+                self.state.plan_steps[step_index]["user_feedback"].append(text)
+                current_description = self.state.plan_steps[step_index]["description"]
+                self.state.plan_steps[step_index]["description"] = (
+                    f"{current_description}\nUser requested adjustment: {text}"
+                )
+                self.state.plan_steps[step_index]["status"] = "PROPOSED"
+            
+            self.registry.save_agent_state(self.state)
+            
+            step = self.state.plan_steps[step_index] if step_index < len(self.state.plan_steps) else {}
+            step_num = step_index + 1
+            message = (
+                f"I updated this step with your feedback. Step {step_num}: {step.get('title', 'N/A')}. "
+                f"{step.get('description', 'N/A')}. Does this look good now?"
+            )
+            self._enqueue_turn(
+                turn_type=TurnType.PLAN_STEP_REVIEW,
+                priority=70,
+                message=message,
+                context="RepositoryAgent is asking the user to review the updated plan step.",
+                requires_user_response=True,
+                metadata={"step_index": step_index},
+            )
+            self.state.phase = RepositoryAgentPhase.PLAN_STEP_REVIEW
+            self.registry.save_agent_state(self.state)
+            return self.state
+
+    async def _handle_execution_approval(self, text: str) -> RepositoryAgentState:
+        if _looks_like_approval(text):
+            self.state.execution_approved = True
+            self.registry.save_agent_state(self.state)
+            return await self.execute_approved_plan()
+        else:
+            self.state.phase = RepositoryAgentPhase.PLAN_STEP_REVIEW
+            self.state.current_plan_step_index = 0
+            self.registry.save_agent_state(self.state)
+            first_step_title = (
+                self.state.plan_steps[0].get("title", "N/A") if self.state.plan_steps else "N/A"
+            )
+            self._enqueue_turn(
+                turn_type=TurnType.PLAN_STEP_REVIEW,
+                priority=70,
+                message=(
+                    f"Understood. Let's review the plan steps again. Step 1: {first_step_title}. "
+                    "Does this look good?"
+                ),
+                context="RepositoryAgent is restarting plan step review after execution rejection.",
+                requires_user_response=True,
+                metadata={"step_index": 0},
+            )
+            return self.state
 
     def _handle_plan_rejection(self, feedback: str) -> RepositoryAgentState:
         self.state.phase = RepositoryAgentPhase.INTAKE
@@ -191,15 +686,155 @@ class RepositoryAgent:
         )
         return self.state
 
+    def _enqueue_turn(
+        self,
+        turn_type: TurnType,
+        priority: int,
+        message: str,
+        context: str,
+        requires_user_response: bool,
+        metadata: Optional[dict] = None,
+    ) -> TurnRequest:
+        turn = TurnRequest(
+            user_id=self.state.user_id,
+            agent_id=self.state.repo_agent_id,
+            repo_agent_id=self.state.repo_agent_id,
+            type=turn_type,
+            priority=priority,
+            message=message,
+            context=context,
+            requires_user_response=requires_user_response,
+            metadata=metadata or {},
+        )
+        self.manager.enqueue_turn(turn)
+        return turn
+
     def _build_repo_context(self) -> str:
         files = self.executor.list_files(self.state.repo_path, max_files=160)
         return "Repository files:\n%s" % "\n".join("- %s" % item for item in files[:160])
 
 
 def _looks_like_approval(response: str) -> bool:
-    normalized = response.strip().lower()
-    approvals = {"yes", "y", "si", "sí", "approve", "approved", "ok", "okay", "dale"}
-    return normalized in approvals or normalized.startswith("approve")
+    normalized = _normalize_short_response(response)
+    approvals = {
+        "yes",
+        "yeah",
+        "yep",
+        "y",
+        "sure",
+        "ok",
+        "okay",
+        "approved",
+        "approve",
+        "go ahead",
+        "looks good",
+        "sounds good",
+        "do it",
+        "proceed",
+        "continue",
+        "ship it",
+        "si",
+        "sí",
+        "vale",
+        "dale",
+    }
+    # Exact match or starts with approve
+    if normalized in approvals or normalized.startswith("approve"):
+        return True
+    # Check if any approval keyword is in the response
+    return any(item in normalized for item in approvals if len(item) > 2)
+
+
+def _looks_like_yes(text: str) -> bool:
+    normalized = _normalize_short_response(text)
+    positives = {
+        "yes",
+        "yeah",
+        "yep",
+        "sure",
+        "go ahead",
+        "looks good",
+        "sounds good",
+        "create a branch",
+        "create one",
+        "make a branch",
+        "make a new branch",
+        "new branch",
+        "use a new branch",
+        "yes create it",
+        "yes please",
+        "please create a branch",
+        "si",
+        "sí",
+        "y",
+        "ok",
+        "okay",
+        "vale",
+        "crea una rama",
+        "nueva rama",
+        "branch nueva",
+        "haz una nueva",
+    }
+    return normalized in positives or any(item in normalized for item in positives if len(item) > 3)
+
+
+def _looks_like_no(text: str) -> bool:
+    normalized = _normalize_short_response(text)
+    negatives = {
+        "no",
+        "nope",
+        "don't",
+        "do not",
+        "don't create one",
+        "do not create a branch",
+        "use current",
+        "use the current branch",
+        "current branch",
+        "same branch",
+        "keep current",
+        "keep the current branch",
+        "no need",
+        "not necessary",
+        "without a branch",
+        "actual",
+        "rama actual",
+        "branch actual",
+        "sin rama",
+        "no hace falta",
+        "usa la actual",
+    }
+    return normalized in negatives or any(item in normalized for item in negatives if len(item) > 3)
+
+
+def _normalize_branch_name(text: str) -> str:
+    normalized = _normalize_short_response(text).strip("\"'")
+    normalized = normalized.replace(" ", "-")
+    normalized = re.sub(r"[^a-z0-9._/-]+", "-", normalized)
+    normalized = re.sub(r"-+", "-", normalized)
+    normalized = re.sub(r"/{2,}", "/", normalized)
+    normalized = normalized.strip("-./")
+    if normalized in {
+        "si",
+        "yes",
+        "yeah",
+        "yep",
+        "no",
+        "nope",
+        "ok",
+        "okay",
+        "sure",
+        "vale",
+        "go-ahead",
+    }:
+        return ""
+    return normalized
+
+
+def _normalize_short_response(text: str) -> str:
+    normalized = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
+    normalized = normalized.lower().replace("’", "'")
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    return normalized
 
 
 def _format_list(items: List[str]) -> str:
