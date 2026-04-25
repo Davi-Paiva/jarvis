@@ -1,0 +1,172 @@
+/* Welcome Page Container */
+.welcome-page {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 3rem 2rem;
+  gap: 2rem;
+}
+
+.workspace-section {
+  border: 1px solid var(--border-color);
+  border-radius: 16px;
+  padding: 2.5rem;
+  max-width: 500px;
+  width: 100%;
+}
+
+.section-title {
+  font-size: 1.5rem;
+  font-weight: 600;
+  margin-bottom: 0.5rem;
+  color: var(--text-primary);
+}
+
+.section-description {
+  color: var(--text-secondary);
+  font-size: 0.875rem;
+  margin-bottom: 2rem;
+}
+
+/* Error Message */
+.error-message {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 1rem;
+  margin-bottom: 1.5rem;
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: 8px;
+  color: #ef4444;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  animation: slideIn 0.3s ease;
+}
+
+.error-message svg {
+  flex-shrink: 0;
+}
+
+/* Folder Button */
+.folder-button {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  padding: 1rem 1.5rem;
+  background: var(--accent-primary);
+  color: white;
+  border: none;
+  border-radius: 10px;
+  font-size: 1rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  box-shadow: 0 2px 8px var(--accent-glow);
+}
+
+.folder-button:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.folder-button:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.folder-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.folder-icon {
+  width: 20px;
+  height: 20px;
+}
+
+/* Selected Folder Display */
+.selected-folder {
+  margin-top: 1.5rem;
+  padding: 1.5rem;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  animation: slideIn 0.3s ease;
+}
+
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.folder-label {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  letter-spacing: 0.1em;
+  margin-bottom: 0.5rem;
+}
+
+.folder-path {
+  color: var(--text-primary);
+  font-family: 'Monaco', 'Menlo', monospace;
+  font-size: 0.875rem;
+  word-break: break-all;
+  margin-bottom: 1rem;
+  padding: 0.75rem;
+  background: var(--bg-primary);
+  border-radius: 6px;
+}
+
+.change-folder-button {
+  width: 100%;
+  padding: 0.625rem;
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  font-size: 0.875rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.change-folder-button:hover {
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  border-color: var(--text-muted);
+}
+
+/* Get Started Button */
+.get-started-button {
+  margin-top: 1.5rem;
+  width: 100%;
+  padding: 1rem 1.5rem;
+  background: var(--accent-primary);
+  color: white;
+  border: none;
+  border-radius: 10px;
+  font-size: 1rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  box-shadow: 0 2px 8px var(--accent-glow);
+}
+
+.get-started-button:hover {
+  background: var(--accent-hover);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px var(--accent-glow);
+}
+
+.get-started-button:active {
+  transform: translateY(0);
+}

@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Optional
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import router as api_router
 from app.config import Settings, load_settings
@@ -27,6 +28,20 @@ def create_app(
     llm_client: Optional[LLMClient] = None,
 ) -> FastAPI:
     app = FastAPI(title="Jarvis Backend", version="0.1.0")
+    
+    # Add CORS middleware to allow requests from Tauri frontend
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[
+            "http://localhost:1420",  # Vite dev server
+            "tauri://localhost",      # Tauri protocol
+            "https://tauri.localhost", # Tauri HTTPS
+        ],
+        allow_credentials=True,
+        allow_methods=["*"],  # Allow all HTTP methods including OPTIONS
+        allow_headers=["*"],  # Allow all headers
+    )
+    
     app.state.orchestrator = create_orchestrator(settings=settings, llm_client=llm_client)
     app.include_router(api_router)
     return app

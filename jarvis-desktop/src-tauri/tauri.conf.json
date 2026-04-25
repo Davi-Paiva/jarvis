@@ -12,9 +12,13 @@
   "app": {
     "windows": [
       {
-        "title": "jarvis-desktop",
-        "width": 800,
-        "height": 600
+        "title": "JARVIS",
+        "width": 1200,
+        "height": 800,
+        "minWidth": 800,
+        "minHeight": 600,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true
       }
     ],
     "security": {
