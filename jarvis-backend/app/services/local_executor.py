@@ -62,7 +62,13 @@ class LocalExecutor:
         scope: Optional[Iterable[str]] = None,
     ) -> List[str]:
         root = self._assert_repo_allowed(repo_path)
-        changed_paths = changed_paths_from_patch(patch_text)
+        normalized_patch = _normalize_patch_text(patch_text)
+        changed_paths = changed_paths_from_patch(normalized_patch)
+        if not changed_paths:
+            raise ValueError(
+                "Generated patch did not contain a valid git diff. "
+                "Expected unified diff content with file headers."
+            )
         outside_scope = paths_outside_scope(changed_paths, scope or [])
         if outside_scope:
             raise ValueError("Patch touches files outside task scope: %s" % outside_scope)
@@ -70,10 +76,18 @@ class LocalExecutor:
             self._resolve_inside_repo(repo_path, changed_path)
 
         async with self._lock_for_repo(root):
-            check = await self._run_process(["git", "apply", "--check", "-"], cwd=str(root), stdin=patch_text)
+            check = await self._run_process(
+                ["git", "apply", "--check", "-"],
+                cwd=str(root),
+                stdin=normalized_patch,
+            )
             if check[0] != 0:
                 raise RuntimeError("Patch check failed: %s" % check[2])
-            result = await self._run_process(["git", "apply", "-"], cwd=str(root), stdin=patch_text)
+            result = await self._run_process(
+                ["git", "apply", "-"],
+                cwd=str(root),
+                stdin=normalized_patch,
+            )
             if result[0] != 0:
                 raise RuntimeError("Patch apply failed: %s" % result[2])
         return changed_paths
@@ -85,7 +99,10 @@ class LocalExecutor:
         timeout_seconds: int = 120,
     ) -> Tuple[int, str, str]:
         root = self._assert_repo_allowed(repo_path)
-        if not command_is_allowed(command, self.settings.jarvis_allowed_commands):
+        if (
+            not self.settings.jarvis_allow_all_commands
+            and not command_is_allowed(command, self.settings.jarvis_allowed_commands)
+        ):
             raise ValueError("Command is not allowed: %s" % command)
         args = shlex.split(command)
         return await asyncio.wait_for(
@@ -169,3 +186,34 @@ def _is_relative_to(path: Path, root: Path) -> bool:
     except ValueError:
         return False
     return common == str(root)
+
+
+def _normalize_patch_text(patch_text: str) -> str:
+    text = patch_text.strip()
+    if not text:
+        return ""
+
+    lines = text.splitlines()
+
+    if lines and lines[0].strip().startswith("```"):
+        lines = lines[1:]
+        while lines and lines[-1].strip() == "":
+            lines.pop()
+        if lines and lines[-1].strip().startswith("```"):
+            lines = lines[:-1]
+
+    start_index = None
+    for index, line in enumerate(lines):
+        if line.startswith("diff --git ") or line.startswith("--- "):
+            start_index = index
+            break
+    if start_index is not None:
+        lines = lines[start_index:]
+
+    while lines and lines[-1].strip() in {"", "```"}:
+        lines.pop()
+
+    normalized = "\n".join(lines).strip()
+    if not normalized:
+        return ""
+    return normalized + "\n"

@@ -56,6 +56,13 @@ def _int_env(name: str, default: int) -> int:
     return int(value)
 
 
+def _bool_env(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None or value.strip() == "":
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 class Settings(BaseModel):
     openai_api_key: Optional[str] = None
     openai_model: str = "gpt-5.4-mini"
@@ -77,6 +84,7 @@ class Settings(BaseModel):
             "git diff",
         ]
     )
+    jarvis_allow_all_commands: bool = True
     jarvis_memory_max_chars: int = 30000
     jarvis_memory_view_max_chars: int = 12000
     jarvis_memory_max_completed_tasks: int = 12
@@ -108,6 +116,7 @@ class Settings(BaseModel):
                     "git diff",
                 ],
             ),
+            jarvis_allow_all_commands=_bool_env("JARVIS_ALLOW_ALL_COMMANDS", True),
             jarvis_memory_max_chars=_int_env("JARVIS_MEMORY_MAX_CHARS", 30000),
             jarvis_memory_view_max_chars=_int_env("JARVIS_MEMORY_VIEW_MAX_CHARS", 12000),
             jarvis_memory_max_completed_tasks=_int_env(

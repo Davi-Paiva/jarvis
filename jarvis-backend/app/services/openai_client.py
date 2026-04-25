@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.config import Settings
 from app.models.repository import RepositoryAgentState
@@ -15,6 +16,32 @@ class TaskImplementationResult(BaseModel):
     proposed_patch: Optional[str] = None
     changed_files: List[str] = Field(default_factory=list)
     test_command: Optional[str] = None
+
+    @field_validator("test_command", mode="before")
+    @classmethod
+    def _normalize_test_command(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            return value
+        normalized = " ".join(value.strip().split())
+        if not normalized:
+            return None
+        lowered = normalized.lower()
+        non_command_markers = (
+            "no tests",
+            "not run",
+            "none",
+            "n/a",
+            "inspection only",
+            "skip",
+            "skipped",
+        )
+        if any(marker in lowered for marker in non_command_markers):
+            return None
+        if normalized.endswith(".") and re.fullmatch(r"[A-Za-z0-9 ()/_-]+\.", normalized):
+            return None
+        return normalized
 
 
 class LLMClient:
@@ -339,6 +366,12 @@ class OpenAIAgentsClient(FakeLLMClient):
             return await super().implement_task(repo_state, task_state, repo_context, memory_context)
         prompt = (
             "Propose implementation output as JSON with result_summary, proposed_patch, changed_files, test_command.\n"
+            "If code changes are needed, `proposed_patch` must be a raw unified git diff string.\n"
+            "Do not wrap the patch in markdown fences.\n"
+            "Do not add commentary before or after the diff.\n"
+            "If no code changes are needed, set `proposed_patch` to null.\n"
+            "`test_command` must be either null or a real shell command that can be executed from the repository root.\n"
+            "Never use explanatory prose in `test_command`.\n"
             "Only include patches inside scope. Task: %s\nRepo context:\n%s\nMemory:\n%s"
         ) % (task_state.model_dump(mode="json"), repo_context, memory_context)
         output = await self._run_agent("Task implementation agent", prompt)
