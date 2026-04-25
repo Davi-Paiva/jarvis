@@ -71,7 +71,6 @@ def build_placeholder_response(text: str, turn_id: Optional[str]) -> AIResponseM
     response_text = (
         "I heard you say: "
         f"{text}. "
-        "Backend LLM and ElevenLabs are not fully wired yet, but the protocol is ready."
     )
     return AIResponseMessage(responseText=response_text, turnId=turn_id)
 
