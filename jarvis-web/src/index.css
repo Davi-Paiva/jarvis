@@ -1,37 +1,294 @@
+﻿/* == Design tokens ======================================================== */
 :root {
-  font-family: 'Avenir Next', 'Segoe UI', sans-serif;
-  font-size: 16px;
-  line-height: 1.45;
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
+  --bg:           #0b0f14;
+  --bg-card:      #131920;
+  --bg-card2:     #1a2332;
+  --border:       #1e2836;
+  --text:         #8b9bb4;
+  --text-h:       #e2e8f0;
+  --accent:       #38bdf8;
+  --accent-green: #4ade80;
+  --accent-red:   #f87171;
+  --accent-yellow:#fbbf24;
+  --sans: system-ui, 'Segoe UI', Roboto, sans-serif;
+  --mono: ui-monospace, Consolas, monospace;
+  font: 16px/150% var(--sans);
+  color: var(--text);
+  background: var(--bg);
+  color-scheme: dark;
   -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
 }
-
+body { margin: 0; }
 #root {
+  width: 100%;
+  max-width: 420px;
+  margin: 0 auto;
   min-height: 100svh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+h2 { margin: 0; font-weight: 600; color: var(--text-h); }
+p  { margin: 0; }
+code { font-family: var(--mono); }
+
+/* == Screens ================================================================ */
+.jv-screen {
+  width: 100%;
+  min-height: 100svh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
 }
 
-body {
-  margin: 0;
-  background:
-    radial-gradient(circle at 10% 0%, #cbe2ff 0%, rgba(203, 226, 255, 0) 44%),
-    radial-gradient(circle at 90% 100%, #d8ffe8 0%, rgba(216, 255, 232, 0) 36%),
-    #f4f9ff;
+/* -- Connect --------------------------------------------------------------- */
+.jv-connect-screen { align-items: center; justify-content: center; padding: 24px 20px; }
+.jv-connect-inner  { width: 100%; display: flex; flex-direction: column; gap: 32px; }
+.jv-connect-logo   { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+.jv-connect-title  {
+  font-size: 52px; font-weight: 700; letter-spacing: -2px;
+  color: var(--accent); text-shadow: 0 0 40px rgba(56,189,248,0.35);
+}
+.jv-connect-sub  { font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--text); }
+.jv-connect-card { display: flex; flex-direction: column; gap: 12px; }
+.jv-connect-hint { font-size: 12px; color: var(--text); text-align: center; }
+
+/* -- Call screen ----------------------------------------------------------- */
+.jv-call-screen { height: 100svh; overflow: hidden; }
+
+.jv-call-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-card);
+  flex-shrink: 0;
+}
+.jv-call-agent { font-weight: 600; color: var(--text-h); font-size: 15px; flex: 1; }
+
+.jv-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; display: inline-block; }
+.jv-dot--ok  { background: var(--accent-green); box-shadow: 0 0 6px var(--accent-green); }
+.jv-dot--err { background: var(--accent-red); }
+
+/* -- Call body (phone-call layout) ---------------------------------------- */
+.jv-call-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 28px;
+  padding: 32px 24px;
 }
 
-h1,
-h2 {
-  margin: 0;
-  color: #102a43;
+/* Orb */
+.jv-orb {
+  position: relative;
+  width: 140px;
+  height: 140px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.jv-orb-inner {
+  width: 80px;
+  height: 80px;
+  border-radius: 50%;
+  transition: background 0.4s, border-color 0.4s;
 }
 
-h1 {
-  font-size: 1.95rem;
-  letter-spacing: -0.03em;
-  margin-bottom: 8px;
+/* idle: static soft glow */
+.jv-orb--idle .jv-orb-inner {
+  background: rgba(139,155,180,0.1);
+  border: 2px solid rgba(139,155,180,0.2);
+  box-shadow: 0 0 24px rgba(139,155,180,0.08);
+}
+/* listening: green pulse */
+.jv-orb--listening .jv-orb-inner {
+  background: rgba(74,222,128,0.18);
+  border: 2px solid var(--accent-green);
+  animation: orb-pulse-green 1.2s ease-in-out infinite;
+}
+/* thinking: slow blue breathe */
+.jv-orb--thinking .jv-orb-inner {
+  background: rgba(56,189,248,0.12);
+  border: 2px solid var(--accent);
+  animation: orb-breathe 2s ease-in-out infinite;
+}
+/* responding: ripple */
+.jv-orb--responding .jv-orb-inner {
+  background: rgba(56,189,248,0.22);
+  border: 2px solid var(--accent);
+  animation: orb-ripple 1s ease-out infinite;
 }
 
-p {
-  margin: 0;
+@keyframes orb-pulse-green {
+  0%,100% { box-shadow: 0 0 0 0   rgba(74,222,128,0.5); transform: scale(1); }
+  50%      { box-shadow: 0 0 0 20px rgba(74,222,128,0); transform: scale(1.08); }
+}
+@keyframes orb-breathe {
+  0%,100% { transform: scale(1);    opacity: 0.75; }
+  50%      { transform: scale(1.12); opacity: 1; }
+}
+@keyframes orb-ripple {
+  0%   { box-shadow: 0 0 0 0   rgba(56,189,248,0.5); }
+  100% { box-shadow: 0 0 0 32px rgba(56,189,248,0); }
+}
+
+/* State label */
+.jv-call-state-label {
+  font-size: 20px;
+  font-weight: 500;
+  color: var(--text-h);
+  letter-spacing: -0.3px;
+  text-align: center;
+}
+
+/* Subtitle */
+.jv-call-subtitle {
+  font-size: 14px;
+  color: var(--text);
+  text-align: center;
+  max-width: 300px;
+  line-height: 160%;
+  font-style: italic;
+  padding: 10px 16px;
+  background: rgba(255,255,255,0.03);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  animation: fade-in 0.3s ease;
+}
+@keyframes fade-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; } }
+/* Live transcript (user speech being detected) */
+.jv-call-transcript {
+  font-size: 18px;
+  font-weight: 500;
+  color: var(--accent-green);
+  text-align: center;
+  max-width: 320px;
+  line-height: 155%;
+  padding: 12px 18px;
+  background: rgba(74,222,128,0.06);
+  border: 1px solid rgba(74,222,128,0.2);
+  border-radius: 14px;
+  animation: fade-in 0.15s ease;
+  letter-spacing: 0.01em;
+}
+
+/* -- Call footer ----------------------------------------------------------- */
+.jv-call-footer {
+  padding: 20px 24px 36px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-card);
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+}
+.jv-call-timer {
+  font-size: 13px;
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  letter-spacing: 0.04em;
+}
+/* Voice button: full-width labelled button inside call footer */
+.jv-call-footer .voice-button {
+  width: 100%;
+  border-radius: 22px;
+  padding: 16px;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+/* == Shared components ====================================================== */
+.jv-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  padding: 20px;
+}
+.jv-label {
+  font-size: 11px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.09em; color: var(--text);
+}
+.jv-input {
+  width: 100%; box-sizing: border-box;
+  padding: 12px 14px;
+  background: #0e151d;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  color: var(--text-h); font-size: 15px; font-family: var(--sans);
+  outline: none; transition: border-color 150ms;
+}
+.jv-input:focus { border-color: var(--accent); }
+
+.jv-btn {
+  border: none; border-radius: 12px;
+  padding: 13px 20px; font-size: 15px; font-weight: 600;
+  font-family: var(--sans); cursor: pointer;
+  transition: opacity 120ms, transform 120ms;
+}
+.jv-btn:active   { transform: scale(0.97); }
+.jv-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.jv-btn--full    { width: 100%; }
+.jv-btn--primary { background: var(--accent); color: #0b0f14; }
+.jv-btn--approve { background: var(--accent-green); color: #0b0f14; }
+.jv-btn--reject  { background: rgba(248,113,113,0.12); border: 1px solid var(--accent-red); color: var(--accent-red); }
+.jv-btn--ghost   { background: transparent; border: 1px solid var(--border); color: var(--text); }
+
+.jv-badge {
+  font-size: 11px; font-weight: 600;
+  padding: 3px 9px; border-radius: 20px;
+  letter-spacing: 0.02em; white-space: nowrap;
+}
+.jv-badge--idle             { background: rgba(139,155,180,0.12); color: var(--text); }
+.jv-badge--running          { background: rgba(56,189,248,0.12);  color: var(--accent); }
+.jv-badge--waiting_approval { background: rgba(251,191,36,0.12);  color: var(--accent-yellow); }
+.jv-badge--warn             { background: rgba(251,191,36,0.12);  color: var(--accent-yellow); }
+.jv-badge--ok               { background: rgba(74,222,128,0.12);  color: var(--accent-green); }
+.jv-badge--err              { background: rgba(248,113,113,0.12); color: var(--accent-red); }
+
+/* == Approval modal ========================================================= */
+.jv-modal-overlay {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,0.72);
+  display: flex; align-items: flex-end; justify-content: center;
+  z-index: 100; padding-bottom: 20px;
+}
+.jv-modal {
+  width: calc(100% - 32px); max-width: 420px;
+  display: flex; flex-direction: column; gap: 14px;
+  border-color: rgba(56,189,248,0.2);
+}
+.jv-modal-eyebrow { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: var(--accent-yellow); }
+.jv-modal-title   { font-size: 18px; font-weight: 600; color: var(--text-h); }
+.jv-modal-desc    { font-size: 14px; color: var(--text); line-height: 150%; }
+.jv-modal-files   { display: flex; flex-wrap: wrap; gap: 6px; }
+.jv-file-chip {
+  font-family: var(--mono); font-size: 11px;
+  padding: 3px 8px; background: #0b0f14;
+  border: 1px solid var(--border); border-radius: 6px; color: var(--accent);
+}
+.jv-modal-actions { display: flex; gap: 10px; }
+
+.jv-modal-voice-hint {
+  font-size: 12px;
+  color: var(--text);
+  text-align: center;
+  letter-spacing: 0.03em;
+  padding-top: 4px;
+  opacity: 0.7;
+}
+
+
+
+.jv-transcript-placeholder {
+  opacity: 0.45;
+  font-style: italic;
+  font-weight: 400;
 }
