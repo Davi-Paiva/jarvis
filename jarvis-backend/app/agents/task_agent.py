@@ -144,11 +144,12 @@ class TaskAgent:
     def _build_repo_context(self, repo_state: RepositoryAgentState, available_files: List[str]) -> str:
         repo_path = repo_state.repo_path
         files = available_files
-        visible_files = _filter_scope(files, self.state.scope)
+        effective_scope = self.state.scope or _focus_paths_from_description(self.state.description)
+        visible_files = _filter_scope(files, effective_scope)
         scope_fallback_used = False
         if not visible_files:
             visible_files = files
-            scope_fallback_used = bool(self.state.scope)
+            scope_fallback_used = bool(effective_scope)
         context_files = _select_context_files(repo_state, self.state, visible_files)
 
         sections = []
@@ -547,3 +548,26 @@ def _loaded_file_path(section: str) -> Optional[str]:
         return None
     path = first_line[len("File: ") :].strip()
     return path or None
+
+
+def _focus_paths_from_description(description: str) -> List[str]:
+    marker = "Focus paths from the approved plan:"
+    if marker not in description:
+        return []
+    section = description.split(marker, 1)[1]
+    lines = []
+    for raw_line in section.splitlines():
+        line = raw_line.strip()
+        if not line:
+            if lines:
+                break
+            continue
+        if line.endswith(":") and not line.startswith("- "):
+            if lines:
+                break
+            continue
+        if line.startswith("- "):
+            lines.append(line[2:].strip())
+        elif lines:
+            break
+    return [line for line in lines if line]

@@ -809,7 +809,7 @@ class RepositoryAgent:
             repo_agent_id=self.state.repo_agent_id,
             title="Implement approved repository change",
             description="\n\n".join(section for section in brief_sections if section.strip()),
-            scope=aggregated_scope,
+            scope=[],
         )
 
     async def _execute_task_agent(self, task_state: TaskAgentState) -> Optional[TaskAgentState]:

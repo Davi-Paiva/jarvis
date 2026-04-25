@@ -585,7 +585,8 @@ class OpenAIAgentsClient(FakeLLMClient):
             "If no more repository files would help and you cannot produce a patch, explain the blocker in `result_summary` and leave `needed_files` empty.\n"
             "`test_command` must be either null or a real shell command that can be executed from the repository root.\n"
             "Never use explanatory prose in `test_command`.\n"
-            "Only include patches inside scope. Task: %s\nRepo context:\n%s\nMemory:\n%s"
+            "Treat `scope` as a hard constraint only when it is non-empty. If `scope` is empty, use the approved focus paths and visible repository files as guidance for a minimal grounded patch.\n"
+            "Task: %s\nRepo context:\n%s\nMemory:\n%s"
         ) % (task_state.model_dump(mode="json"), repo_context, memory_context)
         parsed = await self._run_json_agent(
             "Task implementation agent",
