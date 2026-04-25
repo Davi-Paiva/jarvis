@@ -1,5 +1,5 @@
 import { useJarvisSession } from './app/useJarvisSession';
-import { ConnectionScreen } from './features/connection/ConnectionScreen';
+import { PairingPage } from './features/connection/PairingPage';
 import { CallScreen } from './features/call/CallScreen';
 // import { ApprovalModal } from './features/approvals/ApprovalModal';
 import './App.css';
@@ -8,7 +8,7 @@ function App() {
   const session = useJarvisSession();
 
   if (session.connectionState === 'disconnected') {
-    return <ConnectionScreen onConnect={session.connect} />;
+    return <PairingPage onConnect={session.connect} />;
   }
 
   // const pendingApproval = session.approvals[0] ?? null;
