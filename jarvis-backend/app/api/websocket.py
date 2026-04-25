@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Optional
 import logging
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, status
@@ -91,15 +91,34 @@ async def chat_websocket(
                 }, client_id)
                 logger.info(f"Sent start signal to client {client_id}")
                 
-                # TODO: Integrate with your orchestrator/LLM service
-                # For now, echo back with processing indication
                 user_message = message_data.get("content", "")
-                
-                # Simulate streaming response (replace with actual LLM streaming)
-                response_text = f"Processing: {user_message}"
+                orchestrator = websocket.app.state.orchestrator
+
+                resolved_repo_agent_id = _resolve_repo_agent_id(orchestrator, repo_id)
+                if resolved_repo_agent_id is None:
+                    raise RuntimeError(f"Could not resolve repo agent for identifier: {repo_id}")
+
+                pending_turn = await _get_latest_pending_turn_for_repo(orchestrator, resolved_repo_agent_id)
+                if pending_turn is not None:
+                    result = await orchestrator.submit_user_response(
+                        turn_id=pending_turn.id,
+                        response=user_message,
+                        approved=None,
+                    )
+                else:
+                    result = await orchestrator.handle_user_message(
+                        repo_agent_id=resolved_repo_agent_id,
+                        message=user_message,
+                    )
+
+                latest_pending_turn = await _get_latest_pending_turn_for_repo(
+                    orchestrator,
+                    resolved_repo_agent_id,
+                )
+                response_text = _extract_response_text(result, latest_pending_turn)
                 logger.info(f"Streaming response to client {client_id}: {response_text}")
                 
-                # Stream tokens (simulate)
+                # Stream tokens to preserve current desktop chat protocol.
                 for i, char in enumerate(response_text):
                     await manager.send_message({
                         "type": "token",
@@ -138,3 +157,48 @@ async def chat_websocket(
         except:
             pass
         manager.disconnect(client_id)
+
+
+def _resolve_repo_agent_id(orchestrator: Any, repo_identifier: str) -> Optional[str]:
+    # Accept both repo_agent_id and repo_id for compatibility with current desktop payload.
+    if repo_identifier.startswith("repo_agent_"):
+        try:
+            orchestrator.registry.get_agent_state(repo_identifier)
+            return repo_identifier
+        except Exception:
+            return None
+
+    for state in orchestrator.registry.list_agents(user_id=orchestrator.settings.jarvis_user_id):
+        if state.repo_id == repo_identifier:
+            return state.repo_agent_id
+    return None
+
+
+def _extract_response_text(result: Any, latest_pending_turn: Optional[Any] = None) -> str:
+    if latest_pending_turn is not None and getattr(latest_pending_turn, "message", None):
+        return str(latest_pending_turn.message)
+
+    next_turn = getattr(result, "next_turn", None)
+    if next_turn is not None and getattr(next_turn, "message", None):
+        return str(next_turn.message)
+
+    agent = getattr(result, "agent", None)
+    if agent is not None:
+        if getattr(agent, "last_explanation", None):
+            return str(agent.last_explanation)
+        if getattr(agent, "final_report", None):
+            return str(agent.final_report)
+
+    return "I understood your request and started processing it."
+
+
+async def _get_latest_pending_turn_for_repo(orchestrator: Any, repo_agent_id: str) -> Optional[Any]:
+    pending_turns = await orchestrator.list_pending_turns(user_id=orchestrator.settings.jarvis_user_id)
+    repo_turns = [
+        turn
+        for turn in pending_turns
+        if turn.repo_agent_id == repo_agent_id and turn.requires_user_response
+    ]
+    if not repo_turns:
+        return None
+    return max(repo_turns, key=lambda item: item.created_at)

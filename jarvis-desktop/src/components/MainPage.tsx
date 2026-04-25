@@ -43,9 +43,10 @@ function MainPage({ initialFolder, repoId }: MainPageProps) {
   const [inputMessage, setInputMessage] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
-  const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
+  const [, setStreamingMessageId] = useState<string | null>(null);
   
   const wsRef = useRef<ChatWebSocket | null>(null);
+  const streamingMessageIdRef = useRef<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Auto-scroll to bottom when new messages arrive
@@ -82,7 +83,8 @@ function MainPage({ initialFolder, repoId }: MainPageProps) {
       onToken: (token: string) => {
         setMessages((prev) => {
           const lastMessage = prev[prev.length - 1];
-          if (lastMessage && lastMessage.id === streamingMessageId) {
+          const currentStreamingId = streamingMessageIdRef.current;
+          if (lastMessage && currentStreamingId && lastMessage.id === currentStreamingId) {
             return [
               ...prev.slice(0, -1),
               { ...lastMessage, content: lastMessage.content + token },
@@ -93,13 +95,33 @@ function MainPage({ initialFolder, repoId }: MainPageProps) {
       },
       onComplete: (fullMessage: string) => {
         console.log('[MainPage] Message complete:', fullMessage);
+        setMessages((prev) => {
+          const currentStreamingId = streamingMessageIdRef.current;
+          if (!currentStreamingId) {
+            return prev;
+          }
+          const lastMessage = prev[prev.length - 1];
+          if (lastMessage && lastMessage.id === currentStreamingId) {
+            // Ensure a full assistant message is visible even if token updates were missed.
+            return [
+              ...prev.slice(0, -1),
+              {
+                ...lastMessage,
+                content: fullMessage,
+              },
+            ];
+          }
+          return prev;
+        });
         setIsLoading(false);
         setStreamingMessageId(null);
+        streamingMessageIdRef.current = null;
       },
       onError: (error: string) => {
         console.error('[MainPage] WebSocket error:', error);
         setIsLoading(false);
         setStreamingMessageId(null);
+        streamingMessageIdRef.current = null;
         
         const errorMessage: Message = {
           id: `error-${Date.now()}`,
@@ -190,6 +212,7 @@ function MainPage({ initialFolder, repoId }: MainPageProps) {
     
     setMessages((prev) => [...prev, assistantMessage]);
     setStreamingMessageId(assistantMessageId);
+    streamingMessageIdRef.current = assistantMessageId;
 
     // Send message via WebSocket
     console.log('[MainPage] Calling wsRef.current.sendMessage()');
