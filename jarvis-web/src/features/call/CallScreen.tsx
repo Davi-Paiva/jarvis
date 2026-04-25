@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { VoiceButton } from '../../voice/components/VoiceButton';
+import { CallButton } from './CallButton';
+import { useConversationLoop } from './useConversationLoop';
 import type { Message, Agent/*, ApprovalRequest*/ } from '../../shared/types';
 
 type Props = {
@@ -13,12 +14,13 @@ type Props = {
   onSendMessage: (text: string) => void;
 };
 
-function useCallTimer() {
+function useCallTimer(active: boolean) {
   const [seconds, setSeconds] = useState(0);
   useEffect(() => {
+    if (!active) { setSeconds(0); return; }
     const id = setInterval(() => setSeconds(s => s + 1), 1000);
     return () => clearInterval(id);
-  }, []);
+  }, [active]);
   const m = String(Math.floor(seconds / 60)).padStart(2, '0');
   const s = String(seconds % 60).padStart(2, '0');
   return `${m}:${s}`;
@@ -33,27 +35,30 @@ export function CallScreen({
   activeAgent,
   // approvals,
 }: Props) {
-  const timer = useCallTimer();
+  const { inCall, startCall, endCall } = useConversationLoop();
+  const timer = useCallTimer(inCall);
 
-  // Derive state for orb + label
-  const callState: 'listening' | 'thinking' | 'responding' | 'idle' = listening
+  type CallState = 'inactive' | 'listening' | 'thinking' | 'responding';
+  const callState: CallState = !inCall
+    ? 'inactive'
+    : listening
     ? 'listening'
     : speaking
     ? 'responding'
     : activeAgent.status === 'running'
     ? 'thinking'
-    : 'idle';
+    : 'listening'; // default back to listening when idle mid-call
 
-  const stateLabel: Record<typeof callState, string> = {
+  const stateLabel: Record<CallState, string> = {
+    inactive:   'Tap to start a call',
     listening:  'Listening...',
     thinking:   'Jarvis is thinking...',
     responding: 'Jarvis is responding...',
-    idle:       'Call in progress',
   };
 
   // Subtitle: live transcript first, otherwise last assistant message
   const lastAI = [...messages].reverse().find(m => m.role === 'assistant');
-  const subtitle = transcript || lastAI?.content || '';
+  const subtitle = transcript || (inCall ? lastAI?.content ?? '' : '');
 
   return (
     <div className="jv-screen jv-call-screen">
@@ -61,24 +66,22 @@ export function CallScreen({
       <header className="jv-call-header">
         <span className={`jv-dot ${socketConnected ? 'jv-dot--ok' : 'jv-dot--err'}`} />
         <span className="jv-call-agent">{activeAgent.name}</span>
-        {/* approvals.length > 0 && (
-          <span className="jv-badge jv-badge--warn" style={{ marginLeft: 'auto' }}>
-            {approvals.length} pending
+        {inCall && (
+          <span className="jv-call-timer" style={{ marginLeft: 'auto' }}>
+            <span className="jv-dot jv-dot--ok" style={{ display: 'inline-block', marginRight: 6 }} />
+            {timer}
           </span>
-        ) */}
+        )}
       </header>
 
       {/* Call body */}
       <main className="jv-call-body">
-        {/* Orb */}
         <div className={`jv-orb jv-orb--${callState}`}>
           <div className="jv-orb-inner" />
         </div>
 
-        {/* State label */}
         <p className="jv-call-state-label">{stateLabel[callState]}</p>
 
-        {/* Subtitle — last spoken text, fades in/out */}
         {subtitle && (
           <p className="jv-call-subtitle">{subtitle}</p>
         )}
@@ -86,11 +89,7 @@ export function CallScreen({
 
       {/* Footer */}
       <footer className="jv-call-footer">
-        <VoiceButton />
-        <p className="jv-call-timer">
-          <span className={`jv-dot jv-dot--ok`} style={{ display: 'inline-block', marginRight: 6 }} />
-          {timer}
-        </p>
+        <CallButton inCall={inCall} onStart={startCall} onEnd={endCall} />
       </footer>
     </div>
   );
