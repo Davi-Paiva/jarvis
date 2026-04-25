@@ -42,6 +42,7 @@ function MainPage({ initialFolder, repoId }: MainPageProps) {
   ]);
   const [inputMessage, setInputMessage] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [loadingStatus, setLoadingStatus] = useState("JARVIS is processing your message...");
   const [isConnected, setIsConnected] = useState(false);
   const [, setStreamingMessageId] = useState<string | null>(null);
   
@@ -114,12 +115,14 @@ function MainPage({ initialFolder, repoId }: MainPageProps) {
           return prev;
         });
         setIsLoading(false);
+        setLoadingStatus("JARVIS is processing your message...");
         setStreamingMessageId(null);
         streamingMessageIdRef.current = null;
       },
       onError: (error: string) => {
         console.error('[MainPage] WebSocket error:', error);
         setIsLoading(false);
+        setLoadingStatus("JARVIS is processing your message...");
         setStreamingMessageId(null);
         streamingMessageIdRef.current = null;
         
@@ -189,11 +192,37 @@ function MainPage({ initialFolder, repoId }: MainPageProps) {
       return;
     }
 
+    const userText = inputMessage;
+    const lastAssistantMessage = [...messages]
+      .reverse()
+      .find((message) => message.role === "assistant")
+      ?.content
+      .toLowerCase();
+    const normalizedUserText = userText.trim().toLowerCase();
+    const looksLikeExecutionApproval =
+      (normalizedUserText === "yes" ||
+        normalizedUserText === "y" ||
+        normalizedUserText === "ok" ||
+        normalizedUserText === "okay" ||
+        normalizedUserText === "dale" ||
+        normalizedUserText === "si" ||
+        normalizedUserText === "sí") &&
+      !!lastAssistantMessage &&
+      (lastAssistantMessage.includes("execute the plan") ||
+        lastAssistantMessage.includes("execute it now") ||
+        lastAssistantMessage.includes("ejecutar el plan"));
+
+    if (looksLikeExecutionApproval) {
+      setLoadingStatus("Executing approved plan...");
+    } else {
+      setLoadingStatus("JARVIS is processing your message...");
+    }
+
     console.log('[MainPage] Creating user message');
     const newMessage: Message = {
       id: Date.now().toString(),
       role: "user",
-      content: inputMessage,
+      content: userText,
       timestamp: new Date(),
     };
 
@@ -216,7 +245,7 @@ function MainPage({ initialFolder, repoId }: MainPageProps) {
 
     // Send message via WebSocket
     console.log('[MainPage] Calling wsRef.current.sendMessage()');
-    wsRef.current.sendMessage(inputMessage);
+    wsRef.current.sendMessage(userText);
     console.log('[MainPage] sendMessage call completed');
   };
 
@@ -327,6 +356,7 @@ function MainPage({ initialFolder, repoId }: MainPageProps) {
                   <span></span>
                   <span></span>
                 </div>
+                <div className="message-text">{loadingStatus}</div>
               </div>
             </div>
           )}
