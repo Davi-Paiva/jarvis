@@ -1,0 +1,19 @@
+<idea-plugin>
+    <id>com.jarvis.intellij</id>
+    <name>Jarvis Assistant</name>
+    <vendor>Jarvis Hackathon</vendor>
+
+    <description><![CDATA[
+        Review and understand project code with Jarvis inside IntelliJ IDEA.
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <toolWindow
+            id="Jarvis Assistant"
+            anchor="right"
+            factoryClass="com.jarvis.intellij.toolwindow.JarvisToolWindowFactory"
+            canCloseContents="false" />
+    </extensions>
+</idea-plugin>
