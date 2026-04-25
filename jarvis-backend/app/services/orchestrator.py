@@ -113,6 +113,9 @@ class JarvisOrchestrator:
             phase=state.phase.value,
         )
 
+    async def deactivate_repo_agent(self, repo_agent_id: str) -> None:
+        self.registry.delete_agent(repo_agent_id)
+
     async def start_task(
         self,
         repo_agent_id: str,

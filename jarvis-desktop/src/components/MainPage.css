@@ -76,7 +76,6 @@
 }
 
 .folder-pending-count {
-  margin-left: auto;
   min-width: 1.5rem;
   height: 1.5rem;
   border-radius: 999px;
@@ -86,6 +85,33 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  flex-shrink: 0;
+}
+
+.delete-folder-button {
+  margin-left: auto;
+  padding: 0.25rem;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: var(--text-muted);
+  cursor: pointer;
+  opacity: 0;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.folder-item:hover .delete-folder-button,
+.folder-item.active .delete-folder-button {
+  opacity: 1;
+}
+
+.delete-folder-button:hover {
+  background: rgba(255, 59, 48, 0.1);
+  color: #ff3b30;
 }
 
 .add-folder-button {

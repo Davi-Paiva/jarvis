@@ -30,9 +30,10 @@ interface Message {
 interface MainPageProps {
   initialFolder: string;
   initialRepoAgentId?: string;
+  onAllFoldersDeleted?: () => void;
 }
 
-function MainPage({ initialFolder, initialRepoAgentId }: MainPageProps) {
+function MainPage({ initialFolder, initialRepoAgentId, onAllFoldersDeleted }: MainPageProps) {
   const [folders, setFolders] = useState<Folder[]>([
     {
       id: "1",
@@ -157,6 +158,35 @@ function MainPage({ initialFolder, initialRepoAgentId }: MainPageProps) {
     }
   };
 
+  const handleDeleteFolder = (folderId: string, event: React.MouseEvent) => {
+    event.stopPropagation();
+    
+    const folder = folders.find((f) => f.id === folderId);
+    if (!folder?.repoAgentId) {
+      return;
+    }
+
+    apiService.deactivateFolder(folder.repoAgentId).catch((error) => {
+      console.error("Failed to deactivate folder on backend:", error);
+    });
+    
+    setFolders((prev) => {
+      const updated = prev.filter((f) => f.id !== folderId);
+      
+      if (updated.length === 0) {
+        localStorage.removeItem("jarvis-folders");
+        onAllFoldersDeleted?.();
+      } else {
+        localStorage.setItem("jarvis-folders", JSON.stringify(updated));
+        if (selectedFolderId === folderId) {
+          setSelectedFolderId(updated[0].id);
+        }
+      }
+      
+      return updated;
+    });
+  };
+
   const handleSendMessage = () => {
     const text = inputMessage.trim();
     if (!text) {
@@ -265,6 +295,23 @@ function MainPage({ initialFolder, initialRepoAgentId }: MainPageProps) {
                 {pendingCount > 0 ? (
                   <span className="folder-pending-count">{pendingCount}</span>
                 ) : null}
+                <button
+                  className="delete-folder-button"
+                  onClick={(e) => handleDeleteFolder(folder.id, e)}
+                  title="Remove workspace"
+                >
+                  <svg
+                    width="14"
+                    height="14"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                  >
+                    <line x1="18" y1="6" x2="6" y2="18" />
+                    <line x1="6" y1="6" x2="18" y2="18" />
+                  </svg>
+                </button>
               </button>
             );
           })}

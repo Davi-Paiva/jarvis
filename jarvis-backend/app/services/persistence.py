@@ -76,6 +76,22 @@ class SQLitePersistence:
             agents = [agent for agent in agents if agent.user_id == user_id]
         return sorted(agents, key=lambda item: item.created_at)
 
+    def delete_repo_agent(self, repo_agent_id: str) -> None:
+        # First fetch all turns to identify which ones belong to this repo
+        turns_to_delete = [
+            turn.id for turn in self.list_turns() if turn.repo_agent_id == repo_agent_id
+        ]
+        
+        with self._connect() as conn:
+            conn.execute("DELETE FROM repo_agents WHERE repo_agent_id = ?", (repo_agent_id,))
+            conn.execute("DELETE FROM task_agents WHERE repo_agent_id = ?", (repo_agent_id,))
+            conn.execute("DELETE FROM chat_sessions WHERE repo_agent_id = ?", (repo_agent_id,))
+            conn.execute("DELETE FROM chat_messages WHERE repo_agent_id = ?", (repo_agent_id,))
+            
+            # Clean up orphaned turns for this repo
+            for turn_id in turns_to_delete:
+                conn.execute("DELETE FROM turns WHERE turn_id = ?", (turn_id,))
+
     def save_task_agent(self, state: TaskAgentState) -> None:
         with self._connect() as conn:
             conn.execute(

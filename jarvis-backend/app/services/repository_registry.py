@@ -98,6 +98,11 @@ class RepositoryRegistry:
     def list_agents(self, user_id: Optional[str] = None) -> List[RepositoryAgentState]:
         return self.persistence.list_repo_agents(user_id=user_id)
 
+    def delete_agent(self, repo_agent_id: str) -> None:
+        state = self.get_agent_state(repo_agent_id)
+        self.memory_service.delete_agent_memory(state)
+        self.persistence.delete_repo_agent(repo_agent_id)
+
     def save_task_state(self, state: TaskAgentState) -> TaskAgentState:
         state.touch()
         self.persistence.save_task_agent(state)

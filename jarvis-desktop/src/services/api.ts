@@ -59,6 +59,36 @@ class ApiService {
   }
 
   /**
+   * Deactivate a folder/repository agent
+   */
+  async deactivateFolder(repoAgentId: string): Promise<void> {
+    try {
+      const response = await fetch(`${this.baseUrl}/folder/${repoAgentId}`, {
+        method: "DELETE",
+      });
+
+      if (!response.ok && response.status !== 404) {
+        const errorData = await response.json().catch(() => ({
+          detail: "Unknown error occurred",
+        }));
+        const error: ApiError = {
+          detail: errorData.detail || "Failed to deactivate folder",
+          status_code: response.status,
+        };
+        throw error;
+      }
+    } catch (error) {
+      if ((error as ApiError).status_code) {
+        throw error;
+      }
+      throw {
+        detail: "Failed to connect to backend server",
+        status_code: 0,
+      } as ApiError;
+    }
+  }
+
+  /**
    * Health check endpoint
    */
   async healthCheck(): Promise<boolean> {

@@ -39,3 +39,20 @@ async def activate_folder(
         response.status_code = status.HTTP_200_OK
     return orchestrator.to_create_repo_agent_output(state)
 
+
+@router.delete(
+    "/folder/{repo_agent_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def deactivate_folder(
+    repo_agent_id: str,
+    request: Request,
+) -> None:
+    orchestrator = request.app.state.orchestrator
+    try:
+        await orchestrator.deactivate_repo_agent(repo_agent_id)
+    except KeyError:
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Repository not found")
+

@@ -156,6 +156,13 @@ class VoiceSessionService:
         if turn.handled and turn.requires_user_response:
             return []
 
+        # Check if the repo still exists before processing the turn
+        try:
+            self.orchestrator.registry.get_agent_state(turn.repo_agent_id)
+        except KeyError:
+            # Repo was deleted, ignore this turn
+            return []
+
         summary = self._build_pending_turn(turn)
         if event.repo_agent_id == runtime.active_repo_agent_id:
             runtime.announced_turn_ids.add(turn.id)
@@ -225,7 +232,12 @@ class VoiceSessionService:
 
     def _hydrate_runtime(self, runtime: VoiceSessionRuntime) -> None:
         if runtime.active_repo_agent_id is not None:
-            return
+            try:
+                self.orchestrator.registry.get_agent_state(runtime.active_repo_agent_id)
+                return
+            except KeyError:
+                runtime.active_repo_agent_id = None
+                runtime.active_chat_id = None
         agents = self.orchestrator.registry.list_agents(user_id=runtime.user_id)
         if not agents:
             return
@@ -581,6 +593,17 @@ class VoiceSessionService:
 
     def _build_session_state(self, runtime: VoiceSessionRuntime) -> SessionStateMessage:
         active_repo_id = runtime.active_repo_agent_id
+        
+        # Validate that the active repo still exists
+        if active_repo_id is not None:
+            try:
+                self.orchestrator.registry.get_agent_state(active_repo_id)
+            except KeyError:
+                # Active repo was deleted, clear it
+                active_repo_id = None
+                runtime.active_repo_agent_id = None
+                runtime.active_chat_id = None
+        
         active_chat_id = self._maybe_get_active_chat_id(active_repo_id)
         runtime.active_chat_id = active_chat_id
         if active_repo_id and active_chat_id:
@@ -606,10 +629,16 @@ class VoiceSessionService:
             for state in self.orchestrator.registry.list_agents(user_id=runtime.user_id)
         ]
         active_agent = next((item for item in repos if item.repoAgentId == active_repo_id), None)
+        
+        # Filter out pending turns for deleted repos
+        all_pending_turns = self.orchestrator.manager.list_pending_turns(user_id=runtime.user_id)
+        valid_repo_ids = {state.repo_agent_id for state in self.orchestrator.registry.list_agents(user_id=runtime.user_id)}
         pending = [
             self._build_pending_turn(turn)
-            for turn in self.orchestrator.manager.list_pending_turns(user_id=runtime.user_id)
+            for turn in all_pending_turns
+            if turn.repo_agent_id in valid_repo_ids
         ]
+        
         return SessionStateMessage(
             sessionId=runtime.session_id,
             activeRepoAgentId=active_repo_id,
@@ -641,11 +670,15 @@ class VoiceSessionService:
         )
 
     def _build_pending_turn(self, turn: TurnRequest) -> PendingTurnSummary:
-        state = self.orchestrator.registry.get_agent_state(turn.repo_agent_id)
+        try:
+            state = self.orchestrator.registry.get_agent_state(turn.repo_agent_id)
+            repo_name = self._display_name_for_repo(state)
+        except KeyError:
+            repo_name = "Unknown repository"
         return PendingTurnSummary(
             turnId=turn.id,
             repoAgentId=turn.repo_agent_id,
-            repoName=self._display_name_for_repo(state),
+            repoName=repo_name,
             type=turn.type.value,
             message=turn.message,
             requiresUserResponse=turn.requires_user_response,

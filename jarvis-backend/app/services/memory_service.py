@@ -98,6 +98,16 @@ class MemoryService:
         self.save_memory(memory)
         return memory
 
+    def delete_agent_memory(self, state: RepositoryAgentState) -> None:
+        path = self.path_for_agent(state.repo_agent_id)
+        if path.exists():
+            archive_path = self.archive_dir / ("%s_%s.md" % (
+                state.repo_agent_id,
+                datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+            ))
+            archive_path.parent.mkdir(parents=True, exist_ok=True)
+            path.rename(archive_path)
+
     def load_memory(self, repo_agent_id: str) -> RepositoryMemory:
         path = self.path_for_agent(repo_agent_id)
         if not path.exists():

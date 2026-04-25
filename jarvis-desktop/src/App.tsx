@@ -32,6 +32,12 @@ function App() {
     setCurrentPage("main");
   };
 
+  const handleAllFoldersDeleted = () => {
+    setSelectedFolder(null);
+    setRepoAgentId(null);
+    setCurrentPage("welcome");
+  };
+
   return (
     <div className="app">
       {/* Custom Title Bar with native macOS buttons */}
@@ -47,6 +53,7 @@ function App() {
         <MainPage
           initialFolder={selectedFolder!}
           initialRepoAgentId={repoAgentId || undefined}
+          onAllFoldersDeleted={handleAllFoldersDeleted}
         />
       )}
     </div>
