@@ -69,7 +69,6 @@ export type AIResponseMessage = {
   chatId?: string
 }
 
-<<<<<<< Updated upstream
 // ── Progressive streaming messages ───────────────────────────────────────────
 // Flow for one AI turn:
 //   AUDIO_STREAM_START  → N × AUDIO_STREAM_CHUNK  → AUDIO_STREAM_END
@@ -101,15 +100,6 @@ export type AudioStreamEndMessage = {
   error?: string          // non-null if synthesis failed mid-stream
 }
 
-export type ClientToServerMessage = UserTranscriptMessage
-
-export type ServerToClientMessage =
-  | AIResponseMessage
-  | AudioStreamStartMessage
-  | AudioStreamChunkMessage
-  | AudioStreamEndMessage
-
-=======
 export type PendingTurnMessage = {
   type: 'PENDING_TURN'
   pendingTurn: PendingTurnSummary
@@ -122,4 +112,6 @@ export type ServerToClientMessage =
   | VoiceChatMessage
   | AIResponseMessage
   | PendingTurnMessage
->>>>>>> Stashed changes
+  | AudioStreamStartMessage
+  | AudioStreamChunkMessage
+  | AudioStreamEndMessage

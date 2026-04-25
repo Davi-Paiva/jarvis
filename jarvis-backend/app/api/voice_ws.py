@@ -4,36 +4,23 @@ import base64
 import json
 import logging
 import os
-<<<<<<< Updated upstream
 import time
 import uuid
-from typing import AsyncIterator, Optional
-=======
-from typing import List, Optional
->>>>>>> Stashed changes
+from typing import AsyncIterator, List, Optional
 
 import httpx
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app.config import load_settings
-<<<<<<< Updated upstream
 from app.models.voice_protocol import (
     AIResponseMessage,
     AudioStreamChunkMessage,
     AudioStreamEndMessage,
     AudioStreamStartMessage,
-    UserTranscriptMessage,
-=======
-from app.models.events import ManagerEvent
-from app.models.voice_protocol import (
-    AIResponseMessage,
-    PendingTurnMessage,
     ServerToClientMessage,
     SessionStartMessage,
     SessionStateMessage,
     UserTranscriptMessage,
-    VoiceChatMessage,
->>>>>>> Stashed changes
 )
 
 router = APIRouter()
@@ -83,7 +70,6 @@ def _get_elevenlabs_config() -> tuple[Optional[str], Optional[str], str]:
     return api_key, voice_id, model_id
 
 
-<<<<<<< Updated upstream
 def build_placeholder_response(text: str, turn_id: Optional[str]) -> AIResponseMessage:
     response_text = (
         "I heard you say: "
@@ -93,12 +79,6 @@ def build_placeholder_response(text: str, turn_id: Optional[str]) -> AIResponseM
 
 
 # ── Streaming path ────────────────────────────────────────────────────────────
-=======
-async def synthesize_with_elevenlabs(text: str) -> Optional[str]:
-    api_key = os.getenv("ELEVENLABS_API_KEY")
-    voice_id = os.getenv("ELEVENLABS_VOICE_ID")
-    model_id = os.getenv("ELEVENLABS_MODEL_ID", "eleven_multilingual_v2")
->>>>>>> Stashed changes
 
 async def stream_elevenlabs_chunks(text: str) -> AsyncIterator[bytes]:
     """Yield raw audio bytes in chunks as ElevenLabs generates them.
@@ -280,37 +260,6 @@ async def websocket_voice(websocket: WebSocket) -> None:
             except Exception:
                 continue
 
-<<<<<<< Updated upstream
-            if transcript.type != "USER_TRANSCRIPT":
-                continue
-
-            # Use the client-supplied turnId if provided, otherwise generate one.
-            turn_id = transcript.turnId or uuid.uuid4().hex
-
-            # TODO integration point:
-            # 1) call OpenAI with transcript.text to get response_text
-            # 2) pass response_text to send_audio_stream / synthesize_with_elevenlabs
-            _ = os.getenv("OPENAI_API_KEY")
-
-            response = build_placeholder_response(transcript.text, turn_id)
-            response_text = response.responseText
-
-            # ── Primary path: progressive streaming ───────────────────────
-            # Client receives AUDIO_STREAM_START immediately with the text,
-            # then audio chunks as they arrive from ElevenLabs.
-            streamed = await send_audio_stream(websocket, response_text, turn_id)
-
-            if not streamed:
-                # ── Fallback path: single AI_RESPONSE with full audio ──────
-                # Triggered when ElevenLabs is not configured or stream fails
-                # before any chunk is delivered.
-                audio_base64 = await synthesize_with_elevenlabs(response_text)
-                if audio_base64:
-                    response.audioBase64 = audio_base64
-                    response.audioMimeType = "audio/mpeg"
-                await websocket.send_text(response.model_dump_json())
-
-=======
             message_type = payload.get("type")
             messages: List[ServerToClientMessage] = []
             async with message_lock:
@@ -340,7 +289,6 @@ async def websocket_voice(websocket: WebSocket) -> None:
                 else:
                     continue
                 await _send_messages(websocket, messages)
->>>>>>> Stashed changes
     except WebSocketDisconnect:
         return
     finally:
@@ -355,6 +303,13 @@ async def _send_messages(
 ) -> None:
     for message in messages:
         if isinstance(message, AIResponseMessage):
+            turn_id = message.turnId or uuid.uuid4().hex
+            message.turnId = turn_id
+
+            streamed = await send_audio_stream(websocket, message.responseText, turn_id)
+            if streamed:
+                continue
+
             audio_base64 = await synthesize_with_elevenlabs(message.responseText)
             if audio_base64:
                 message.audioBase64 = audio_base64
