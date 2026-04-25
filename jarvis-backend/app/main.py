@@ -36,7 +36,8 @@ def create_app(
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[
-            "http://localhost:1420",  # Vite dev server
+            "http://localhost:1420",  # Vite dev server (Tauri)
+            "http://localhost:5173",  # Vite dev server (web)
             "tauri://localhost",      # Tauri protocol
             "https://tauri.localhost", # Tauri HTTPS
         ],
@@ -47,6 +48,8 @@ def create_app(
     
     app.state.orchestrator = create_orchestrator(settings=settings, llm_client=llm_client)
     app.include_router(api_router)
+    app.include_router(health_router)
+    app.include_router(voice_ws_router)
     return app
 
 
