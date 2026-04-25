@@ -8,7 +8,7 @@ from app.agents.task_agent import TaskAgent
 from app.graphs.repository_agent_graph import build_repository_agent_graph
 from app.models.repository import RepositoryAgentState
 from app.models.state import RepositoryAgentPhase, TaskAgentStatus
-from app.models.task import TaskAgentState
+from app.models.task import TaskAgentState, TaskPlanItem
 from app.models.turns import TurnRequest, TurnResponse, TurnType
 from app.services.global_manager import GlobalManager
 from app.services.local_executor import LocalExecutor
@@ -336,10 +336,10 @@ class RepositoryAgent:
         if self.state.final_report:
             completion_message = (
                 f"{self.state.final_report}\n\n"
-                "You can review and approve the changes in the desktop app."
+                "You can review the changes in the desktop app."
             )
         else:
-            completion_message = "I've completed the task. You can review and approve the changes in the desktop app."
+            completion_message = "I've completed the task. You can review the changes in the desktop app."
 
         self.manager.enqueue_turn(
             TurnRequest(
@@ -618,10 +618,25 @@ class RepositoryAgent:
         else:
             if step_index < len(self.state.plan_steps):
                 self.state.plan_steps[step_index]["user_feedback"].append(text)
-                current_description = self.state.plan_steps[step_index]["description"]
-                self.state.plan_steps[step_index]["description"] = (
-                    f"{current_description}\nUser requested adjustment: {text}"
+                current_step = TaskPlanItem(
+                    title=self.state.plan_steps[step_index].get("title", "Task"),
+                    description=self.state.plan_steps[step_index].get("description", ""),
+                    scope=self.state.plan_steps[step_index].get("scope", []),
                 )
+                repo_context = self._build_repo_context()
+                memory_context = self.memory_service.render_memory_for_llm(
+                    self.state.repo_agent_id
+                ).text
+                revised_step = await self.llm_client.revise_plan_step(
+                    state=self.state,
+                    current_step=current_step,
+                    user_feedback=text,
+                    repo_context=repo_context,
+                    memory_context=memory_context,
+                )
+                self.state.plan_steps[step_index]["title"] = revised_step.title
+                self.state.plan_steps[step_index]["description"] = revised_step.description
+                self.state.plan_steps[step_index]["scope"] = revised_step.scope
                 self.state.plan_steps[step_index]["status"] = "PROPOSED"
             
             self.registry.save_agent_state(self.state)
@@ -629,8 +644,9 @@ class RepositoryAgent:
             step = self.state.plan_steps[step_index] if step_index < len(self.state.plan_steps) else {}
             step_num = step_index + 1
             message = (
-                f"I updated this step with your feedback. Step {step_num}: {step.get('title', 'N/A')}. "
-                f"{step.get('description', 'N/A')}. Does this look good now?"
+                f"I revised step {step_num} based on your feedback. "
+                f"Step {step_num}: {step.get('title', 'N/A')}. {step.get('description', 'N/A')}. "
+                "Please approve this revised step or tell me what to change."
             )
             self._enqueue_turn(
                 turn_type=TurnType.PLAN_STEP_REVIEW,
@@ -737,6 +753,13 @@ def _looks_like_approval(response: str) -> bool:
         "sí",
         "vale",
         "dale",
+        "its ok",
+        "it's ok",
+        "thats ok",
+        "that's ok",
+        "fine",
+        "works for me",
+        "all good",
     }
     # Exact match or starts with approve
     if normalized in approvals or normalized.startswith("approve"):

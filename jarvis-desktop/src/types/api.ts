@@ -7,12 +7,10 @@ export interface CreateRepoAgentInput {
 }
 
 export interface CreateRepoAgentOutput {
+  repo_agent_id: string;
   repo_id: string;
-  repo_path: string;
-  display_name: string;
-  branch_name?: string;
-  created_at: string;
-  // Add other fields based on your backend response
+  thread_id: string;
+  phase: string;
 }
 
 export interface ApiError {

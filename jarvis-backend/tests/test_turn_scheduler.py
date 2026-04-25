@@ -34,7 +34,7 @@ def test_turn_scheduler_uses_priority_then_age(tmp_path):
 
     assert scheduler.next_turn().id == high.id
     scheduler.mark_handled(high.id)
-    assert scheduler.next_turn().id == low.id
+    assert scheduler.next_turn() is None
 
 
 def test_turn_scheduler_respects_intake_lock(tmp_path):
@@ -66,3 +66,28 @@ def test_turn_scheduler_respects_intake_lock(tmp_path):
     scheduler.mark_handled(locked.id)
     assert scheduler.next_turn().id == other.id
 
+
+def test_turn_scheduler_ignores_non_blocking_turns(tmp_path):
+    persistence = SQLitePersistence(str(tmp_path / "jarvis.db"))
+    scheduler = TurnScheduler(persistence)
+    info = TurnRequest(
+        agent_id="agent_a",
+        repo_agent_id="agent_a",
+        type=TurnType.EXPLANATION,
+        priority=90,
+        message="explanation",
+        requires_user_response=False,
+    )
+    approval = TurnRequest(
+        agent_id="agent_b",
+        repo_agent_id="agent_b",
+        type=TurnType.BRANCH_PERMISSION,
+        priority=50,
+        message="branch?",
+        requires_user_response=True,
+    )
+
+    scheduler.enqueue(info)
+    scheduler.enqueue(approval)
+
+    assert scheduler.next_turn().id == approval.id

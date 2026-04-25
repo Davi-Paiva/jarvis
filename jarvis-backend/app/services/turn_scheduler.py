@@ -35,7 +35,9 @@ class TurnScheduler:
 
     def next_turn(self, user_id: str = "demo") -> Optional[TurnRequest]:
         candidates = [
-            turn for turn in self.persistence.list_turns(user_id=user_id) if not turn.handled
+            turn
+            for turn in self.persistence.list_turns(user_id=user_id)
+            if not turn.handled and turn.requires_user_response
         ]
         if self.intake_lock_agent_id:
             candidates = [
@@ -44,4 +46,3 @@ class TurnScheduler:
         if not candidates:
             return None
         return sorted(candidates, key=lambda turn: (-turn.priority, turn.created_at))[0]
-

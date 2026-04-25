@@ -41,13 +41,64 @@ def test_orchestrator_creates_agent_runs_approval_flow(tmp_path):
         )
         assert finished.agent.phase == RepositoryAgentPhase.DONE
         assert finished.agent.final_report
-        assert finished.next_turn is not None
-        assert finished.next_turn.type == TurnType.COMPLETION
+        assert finished.next_turn is None
 
         tasks = orchestrator.registry.list_task_agents(agent.repo_agent_id)
-        assert len(tasks) == 1
-        assert tasks[0].status == TaskAgentStatus.DEAD
+        assert len(tasks) == 4
+        assert all(task.status == TaskAgentStatus.DEAD for task in tasks)
         assert (tmp_path / "memory" / ("%s.md" % agent.repo_agent_id)).exists()
+
+    asyncio.run(scenario())
+
+
+def test_orchestrator_explanations_do_not_stay_pending(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "main.py").write_text("print('hello')\n", encoding="utf-8")
+    orchestrator = _orchestrator(tmp_path)
+
+    async def scenario():
+        agent = await orchestrator.create_repo_agent(str(repo))
+
+        first = await orchestrator.handle_user_message(agent.repo_agent_id, "what does this do")
+        second = await orchestrator.handle_user_message(agent.repo_agent_id, "how does this work")
+
+        assert first.agent.last_explanation is not None
+        assert second.agent.last_explanation is not None
+        assert first.next_turn is None
+        assert second.next_turn is None
+        assert await orchestrator.list_pending_turns() == []
+
+    asyncio.run(scenario())
+
+
+def test_modification_flow_treats_its_ok_as_step_approval(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "main.py").write_text("print('hello')\n", encoding="utf-8")
+    orchestrator = _orchestrator(tmp_path)
+
+    async def scenario():
+        agent = await orchestrator.create_repo_agent(str(repo))
+        started = await orchestrator.handle_user_message(
+            agent.repo_agent_id,
+            "fix this endpoint",
+        )
+        assert started.next_turn is not None
+        assert started.next_turn.type == TurnType.BRANCH_PERMISSION
+
+        branch_answer = await orchestrator.submit_user_response(
+            started.next_turn.id,
+            "no",
+        )
+        assert branch_answer.next_turn is not None
+        assert branch_answer.next_turn.type == TurnType.PLAN_STEP_REVIEW
+
+        reviewed = await orchestrator.submit_user_response(
+            branch_answer.next_turn.id,
+            "its ok",
+        )
+        assert reviewed.agent.plan_steps[0]["status"] == "APPROVED"
 
     asyncio.run(scenario())
 

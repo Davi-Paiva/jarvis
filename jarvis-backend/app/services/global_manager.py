@@ -24,6 +24,8 @@ class GlobalManager:
         self.scheduler.release_intake_lock(repo_agent_id)
 
     def enqueue_turn(self, turn: TurnRequest) -> TurnRequest:
+        if not turn.requires_user_response:
+            turn.handled = True
         saved = self.scheduler.enqueue(turn)
         event_type = (
             ManagerEventType.APPROVAL_REQUIRED
@@ -47,7 +49,11 @@ class GlobalManager:
         return self.scheduler.next_turn(user_id=user_id)
 
     def list_pending_turns(self, user_id: str = "demo") -> List[TurnRequest]:
-        turns = [turn for turn in self.persistence.list_turns(user_id=user_id) if not turn.handled]
+        turns = [
+            turn
+            for turn in self.persistence.list_turns(user_id=user_id)
+            if not turn.handled and turn.requires_user_response
+        ]
         return sorted(turns, key=lambda turn: (-turn.priority, turn.created_at))
 
     def register_listener(self) -> asyncio.Queue:

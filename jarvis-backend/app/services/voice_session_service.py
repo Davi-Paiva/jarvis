@@ -151,7 +151,9 @@ class VoiceSessionService:
             return []
 
         turn = self.orchestrator.manager.get_turn(event.turn_id)
-        if turn is None or turn.handled or turn.id in runtime.announced_turn_ids:
+        if turn is None or turn.id in runtime.announced_turn_ids:
+            return []
+        if turn.handled and turn.requires_user_response:
             return []
 
         summary = self._build_pending_turn(turn)
@@ -159,7 +161,7 @@ class VoiceSessionService:
             runtime.announced_turn_ids.add(turn.id)
             return self._messages_for_turn(runtime, turn, summary)
 
-        if turn.type not in {TurnType.APPROVAL, TurnType.BLOCKING_QUESTION, TurnType.COMPLETION}:
+        if not turn.requires_user_response and turn.type != TurnType.COMPLETION:
             return []
 
         runtime.announced_turn_ids.add(turn.id)

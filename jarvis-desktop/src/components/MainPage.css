@@ -75,6 +75,19 @@
   white-space: nowrap;
 }
 
+.folder-pending-count {
+  margin-left: auto;
+  min-width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 999px;
+  background: var(--accent-primary);
+  color: white;
+  font-size: 0.75rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .add-folder-button {
   margin: 1rem;
   padding: 0.75rem 1rem;
@@ -137,6 +150,11 @@
   white-space: nowrap;
 }
 
+.chat-note {
+  font-size: 0.75rem;
+  color: var(--accent-primary);
+}
+
 /* Connection Status */
 .connection-status {
   display: flex;
@@ -172,6 +190,27 @@
 
 .connection-status.disconnected .status-dot {
   background: #ef4444;
+}
+
+.pending-turn-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  padding: 0.875rem 1.5rem;
+  border-bottom: 1px solid var(--border-color);
+  background: rgba(59, 130, 246, 0.08);
+  color: var(--text-primary);
+}
+
+.pending-turn-banner strong {
+  font-size: 0.75rem;
+  color: var(--accent-primary);
+  letter-spacing: 0.08em;
+}
+
+.pending-turn-banner span {
+  font-size: 0.875rem;
+  line-height: 1.5;
 }
 
 @keyframes pulse {

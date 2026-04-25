@@ -153,10 +153,9 @@ def test_voice_websocket_notifies_pending_turn_from_another_repo(tmp_path):
             assert _has_voice_response(initial_guidance)
 
             asyncio.run(
-                orchestrator.start_task(
+                orchestrator.handle_user_message(
                     beta_state.repo_agent_id,
-                    "Need approval for beta",
-                    ["Keep it safe"],
+                    "fix this backend flow",
                 )
             )
 
@@ -171,6 +170,7 @@ def test_voice_websocket_notifies_pending_turn_from_another_repo(tmp_path):
             spoken_text = extract_voice_response_text(notified)
 
             assert pending["pendingTurn"]["repoAgentId"] == beta_state.repo_agent_id
+            assert pending["pendingTurn"]["type"] == "BRANCH_PERMISSION"
             if spoken_text:
                 assert "Do you want to switch" in spoken_text
             else:
