@@ -52,6 +52,7 @@ class TaskAgent:
             repo_context = self._build_repo_context(repo_state, available_files)
             requested_file_contents: List[str] = []
             attempt_feedback: List[str] = []
+            consecutive_patch_failures = 0
             max_attempts = 5 if repo_state.intent_type == "MODIFY_CODE" and self.llm_client.is_live() else 1
 
             self._set_status(TaskAgentStatus.WORKING)
@@ -74,18 +75,62 @@ class TaskAgent:
                 self.state.proposed_patch = result.proposed_patch
 
                 if result.proposed_patch:
+                    syntax_error = self.executor.validate_patch_syntax(
+                        patch_text=result.proposed_patch,
+                        scope=_patch_scope(repo_state, self.state),
+                        repo_path=repo_state.repo_path,
+                    )
+                    if syntax_error:
+                        consecutive_patch_failures += 1
+                        attempt_feedback.append(
+                            _feedback(
+                                "patch_syntax_failure",
+                                "Attempt %s patch failed syntax validation: %s" % (attempt, syntax_error),
+                            )
+                        )
+                        if consecutive_patch_failures >= 2:
+                            attempt_feedback.append(
+                                _feedback(
+                                    "patch_strategy_switch",
+                                    "Switch strategy now: return replacement_files instead of another manual diff.",
+                                )
+                            )
+                        if attempt < max_attempts:
+                            auto_contents = self._load_auto_candidate_file_contents(
+                                repo_path=repo_state.repo_path,
+                                visible_files=visible_files,
+                                already_loaded=requested_file_contents,
+                            )
+                            if auto_contents:
+                                requested_file_contents.extend(auto_contents)
+                            continue
+                        self.state.last_error = _build_patch_failure_error(attempt_feedback)
+                        self._set_status(TaskAgentStatus.FAILED)
+                        return self.state
                     try:
                         changed = await self.executor.apply_patch(
                             repo_path=repo_state.repo_path,
                             patch_text=result.proposed_patch,
                             scope=_patch_scope(repo_state, self.state),
                         )
+                        consecutive_patch_failures = 0
                         self.state.changed_files = changed
                         break
                     except Exception as exc:
+                        consecutive_patch_failures += 1
                         attempt_feedback.append(
-                            "Attempt %s patch failed: %s" % (attempt, str(exc))
+                            _feedback(
+                                "patch_apply_failure",
+                                "Attempt %s patch failed: %s" % (attempt, str(exc)),
+                            )
                         )
+                        if consecutive_patch_failures >= 2:
+                            attempt_feedback.append(
+                                _feedback(
+                                    "patch_strategy_switch",
+                                    "Switch strategy now: return replacement_files instead of another manual diff.",
+                                )
+                            )
                         if attempt < max_attempts:
                             auto_contents = self._load_auto_candidate_file_contents(
                                 repo_path=repo_state.repo_path,
@@ -99,6 +144,36 @@ class TaskAgent:
                             self._set_status(TaskAgentStatus.FAILED)
                             return self.state
                         continue
+
+                if result.replacement_files:
+                    generated_patch = self.executor.build_patch_from_replacements(
+                        repo_path=repo_state.repo_path,
+                        replacements=result.replacement_files,
+                    )
+                    if generated_patch:
+                        self.state.proposed_patch = generated_patch
+                        try:
+                            changed = await self.executor.apply_patch(
+                                repo_path=repo_state.repo_path,
+                                patch_text=generated_patch,
+                                scope=_patch_scope(repo_state, self.state),
+                            )
+                            consecutive_patch_failures = 0
+                            self.state.changed_files = changed
+                            break
+                        except Exception as exc:
+                            attempt_feedback.append(
+                                _feedback(
+                                    "patch_apply_failure",
+                                    "Attempt %s generated patch from replacement_files failed: %s"
+                                    % (attempt, str(exc)),
+                                )
+                            )
+                            if attempt >= max_attempts:
+                                self.state.last_error = _build_patch_failure_error(attempt_feedback)
+                                self._set_status(TaskAgentStatus.FAILED)
+                                return self.state
+                            continue
 
                 if result.changed_files:
                     self.state.changed_files = result.changed_files
@@ -116,7 +191,10 @@ class TaskAgent:
                         continue
                     if attempt < max_attempts:
                         attempt_feedback.append(
-                            _build_unresolved_files_feedback(result.needed_files)
+                            _feedback(
+                                "unresolved_needed_files",
+                                _build_unresolved_files_feedback(result.needed_files),
+                            )
                         )
                         continue
                     break
@@ -130,7 +208,10 @@ class TaskAgent:
                     if auto_contents:
                         requested_file_contents.extend(auto_contents)
                     attempt_feedback.append(
-                        _build_missing_diff_feedback(result.result_summary)
+                        _feedback(
+                            "placeholder_response",
+                            _build_missing_diff_feedback(result.result_summary),
+                        )
                     )
                     continue
                 if attempt < max_attempts and _needs_full_file_context(result.result_summary):
@@ -142,7 +223,10 @@ class TaskAgent:
                     if auto_contents:
                         requested_file_contents.extend(auto_contents)
                         attempt_feedback.append(
-                            _build_full_context_feedback(result.result_summary)
+                            _feedback(
+                                "missing_full_context",
+                                _build_full_context_feedback(result.result_summary),
+                            )
                         )
                         continue
                 break
@@ -357,7 +441,7 @@ def _build_patch_failure_error(patch_errors: List[str]) -> str:
     last_error = patch_errors[-1] if patch_errors else "Patch could not be applied."
     return (
         "Execution failed because the implementation phase produced patches, but none passed "
-        "the repository patch check after internal retries. %s"
+        "the repository patch check after internal retries, including strategy switches away from manual diffs when patch syntax stayed unstable. %s"
     ) % last_error
 
 
@@ -385,7 +469,8 @@ def _compose_attempt_context(
     if attempt_feedback:
         sections.append(
             "Previous execution feedback:\n%s\n\n"
-            "Your next response must either return a valid unified git diff in `proposed_patch` or request additional repository files through `needed_files`."
+            "Your next response must either return a valid unified git diff in `proposed_patch`, "
+            "return complete final file contents in `replacement_files`, or request additional repository files through `needed_files`."
             % "\n".join("- %s" % item for item in attempt_feedback[-3:])
         )
     return "\n\n".join(section for section in sections if section.strip())
@@ -397,6 +482,10 @@ def _loaded_file_path(section: str) -> Optional[str]:
         return None
     path = first_line[len("File: ") :].strip()
     return path or None
+
+
+def _feedback(kind: str, message: str) -> str:
+    return "[%s] %s" % (kind, message)
 
 
 def _focus_paths_from_description(description: str) -> List[str]:
@@ -446,13 +535,15 @@ def _build_missing_diff_feedback(result_summary: Optional[str]) -> str:
         return (
             "The previous attempt returned no patch and no requested files. "
             "Do not return a placeholder, plan, or 'next step' message. "
-            "Return an actual grounded unified diff now, or request the exact additional files you still need. "
+            "Return an actual grounded unified diff now, return complete final file contents in `replacement_files`, "
+            "or request the exact additional files you still need. "
             "Previous summary: %s"
         ) % summary
     return (
         "The previous attempt returned no patch and no requested files. "
         "Do not return a placeholder or planning message. "
-        "Return an actual grounded unified diff now, or request the exact additional files you still need."
+        "Return an actual grounded unified diff now, return complete final file contents in `replacement_files`, "
+        "or request the exact additional files you still need."
     )
 
 

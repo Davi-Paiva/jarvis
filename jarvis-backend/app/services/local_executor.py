@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import difflib
 import os
 import re
 import shlex
@@ -54,6 +55,60 @@ class LocalExecutor:
             if len(matches) >= max_matches:
                 break
         return matches
+
+    def validate_patch_syntax(
+        self,
+        patch_text: str,
+        scope: Optional[Iterable[str]] = None,
+        repo_path: Optional[str] = None,
+    ) -> Optional[str]:
+        normalized_patch = _normalize_patch_text(patch_text)
+        if repo_path is not None:
+            normalized_patch = _repair_patch_headers(
+                patch_text=normalized_patch,
+                repo_root=self._assert_repo_allowed(repo_path),
+                scope=scope or [],
+            )
+        return _validate_patch_syntax(normalized_patch)
+
+    def build_patch_from_replacements(
+        self,
+        repo_path: str,
+        replacements: Dict[str, Optional[str]],
+    ) -> str:
+        self._assert_repo_allowed(repo_path)
+        patch_chunks: List[str] = []
+        for relative_path, new_content in sorted(replacements.items()):
+            path = self._resolve_inside_repo(repo_path, relative_path)
+            old_exists = path.exists()
+            old_content = ""
+            if old_exists and path.is_file():
+                old_content = path.read_text(encoding="utf-8", errors="replace")
+            old_lines = old_content.splitlines(keepends=True)
+            new_text = None if new_content is None else _ensure_patch_text_newline(str(new_content))
+            if new_text is None and not old_exists:
+                continue
+            new_lines = [] if new_text is None else new_text.splitlines(keepends=True)
+            if old_content == (new_text or ""):
+                continue
+            from_file = "/dev/null" if not old_exists else "a/%s" % relative_path
+            to_file = "/dev/null" if new_text is None else "b/%s" % relative_path
+            diff_lines = list(
+                difflib.unified_diff(
+                    old_lines,
+                    new_lines,
+                    fromfile=from_file,
+                    tofile=to_file,
+                    lineterm="",
+                )
+            )
+            if not diff_lines:
+                continue
+            patch_chunks.append("diff --git a/{0} b/{0}".format(relative_path))
+            patch_chunks.extend(diff_lines)
+        if not patch_chunks:
+            return ""
+        return "\n".join(patch_chunks) + "\n"
 
     async def apply_patch(
         self,
@@ -192,6 +247,12 @@ class LocalExecutor:
         )
 
 
+def _ensure_patch_text_newline(text: str) -> str:
+    if not text:
+        return ""
+    return text if text.endswith("\n") else text + "\n"
+
+
 def _is_relative_to(path: Path, root: Path) -> bool:
     try:
         common = os.path.commonpath([str(path), str(root)])
@@ -296,6 +357,44 @@ def _describe_missing_patch_headers(patch_text: str, scope: Iterable[str]) -> st
         "Generated patch did not contain a valid git diff. "
         "Expected unified diff content with file headers."
     )
+
+
+def _validate_patch_syntax(patch_text: str) -> Optional[str]:
+    if not patch_text:
+        return "Generated patch was empty."
+
+    lines = patch_text.splitlines()
+    if not any(line.startswith("diff --git ") or line.startswith("--- ") for line in lines):
+        return "Generated patch did not include unified diff file headers."
+
+    in_hunk = False
+    saw_header = False
+    for line in lines:
+        if line.startswith("diff --git "):
+            saw_header = True
+            in_hunk = False
+            continue
+        if line.startswith("--- ") or line.startswith("+++ "):
+            saw_header = True
+            in_hunk = False
+            continue
+        if line.startswith("@@ "):
+            if not saw_header:
+                return "Generated patch contained a hunk before any file header."
+            in_hunk = True
+            continue
+        if in_hunk:
+            if line.startswith((" ", "+", "-", "\\")):
+                continue
+            if line.startswith(("diff --git ", "--- ", "+++ ", "@@ ")):
+                in_hunk = line.startswith("@@ ")
+                continue
+            return (
+                "Generated patch contained invalid hunk content. Each hunk line must start with a space, "
+                "`+`, `-`, or `\\`."
+            )
+
+    return None
 
 
 def _describe_patch_apply_error(stderr: str) -> str:

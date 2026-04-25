@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -14,6 +14,7 @@ from app.models.task import TaskAgentState, TaskPlanItem
 class TaskImplementationResult(BaseModel):
     result_summary: str
     proposed_patch: Optional[str] = None
+    replacement_files: Dict[str, Optional[str]] = Field(default_factory=dict)
     changed_files: List[str] = Field(default_factory=list)
     needed_files: List[str] = Field(default_factory=list)
     test_command: Optional[str] = None
@@ -54,6 +55,31 @@ class TaskImplementationResult(BaseModel):
         if isinstance(value, (list, tuple, set)):
             return _dedupe_strings(str(item) for item in value)
         return []
+
+    @field_validator("replacement_files", mode="before")
+    @classmethod
+    def _normalize_replacement_files(cls, value: Optional[Any]) -> Dict[str, Optional[str]]:
+        if value is None:
+            return {}
+        if isinstance(value, dict):
+            normalized: Dict[str, Optional[str]] = {}
+            for raw_path, raw_content in value.items():
+                path = str(raw_path).strip()
+                if not path:
+                    continue
+                normalized[path] = None if raw_content is None else str(raw_content)
+            return normalized
+        if isinstance(value, (list, tuple)):
+            normalized: Dict[str, Optional[str]] = {}
+            for item in value:
+                if not isinstance(item, dict):
+                    continue
+                path = str(item.get("path", "")).strip()
+                if not path:
+                    continue
+                normalized[path] = None if item.get("content") is None else str(item.get("content"))
+            return normalized
+        return {}
 
 
 class LLMClient:
@@ -174,13 +200,23 @@ class FakeLLMClient(LLMClient):
         goal = state.task_goal or "Execute approved repository task"
         return [
             TaskPlanItem(
-                title="Figure out the approach",
+                title="Inspect the repo",
                 description=f"I'll check out the current code and figure out where we need to make changes for {goal}",
                 scope=[],
             ),
             TaskPlanItem(
+                title="Plan the change",
+                description="Then I'll map the safest implementation approach using the current repository structure",
+                scope=[],
+            ),
+            TaskPlanItem(
                 title="Make the changes",
-                description="Then I'll update the code and make sure it all works together",
+                description="Next I'll update the code and keep the changes scoped to the approved goal",
+                scope=[],
+            ),
+            TaskPlanItem(
+                title="Validate the result",
+                description="Finally I'll run the relevant checks and summarize what changed",
                 scope=[],
             ),
         ]
@@ -402,34 +438,22 @@ class OpenAIAgentsClient(FakeLLMClient):
             "- Keep it to 2-3 steps MAX - combine related work\n"
             "- Do not just paraphrase the user's request\n"
             "- Do not quote or copy the user's original prompt verbatim in any step description\n"
-<<<<<<< Updated upstream
             "- Make each step specific to repository work\n"
             "- Separate inspection/design work from implementation and validation\n"
-            "- Make descriptions conversational and detailed, but NO markdown formatting\n"
+            "- Make descriptions conversational and concise, but NO markdown formatting\n"
+            "- Write like you're explaining to a coworker (contractions are good)\n"
             "- Write titles and descriptions for natural voice output\n"
             "- When mentioning files in descriptions, use natural language\n"
             "- For example, say 'the client file in the services folder' not 'services/client.py'\n"
             "- Explain what will be changed and why in plain language\n"
             "- Use the repository context and included file contents to anchor the steps to real modules and surfaces\n"
-=======
-            "- Write like you're explaining to a coworker - use 'I'll' or 'We'll' or 'Let's'\n"
-            "- Be casual and conversational - contractions are good\n"
-            "- Write for natural voice output\n"
-            "- When mentioning files, use natural language like 'the client file in services'\n"
-            "- One sentence per description - keep it brief\n"
->>>>>>> Stashed changes
             "- In the 'scope' array, include actual file paths or patterns for technical processing\n\n"
             "Task goal: %s\n"
             "Requirements: %s\n"
             "Plan text:\n%s\n\n"
-<<<<<<< Updated upstream
             "Repository context:\n%s\n\n"
             "Return a JSON array of step objects with conversational descriptions:"
         ) % (state.task_goal, state.requirements, plan, state.planning_context or "")
-=======
-            "Return a JSON array of step objects with casual, coworker-style descriptions:"
-        ) % (state.task_goal, state.requirements, plan)
->>>>>>> Stashed changes
         parsed = await self._run_json_agent(
             "Task splitter agent",
             prompt,

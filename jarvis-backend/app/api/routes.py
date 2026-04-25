@@ -43,6 +43,8 @@ async def activate_folder(
 @router.delete(
     "/folder/{repo_agent_id}",
     status_code=status.HTTP_204_NO_CONTENT,
+    response_model=None,
+    response_class=Response,
 )
 async def deactivate_folder(
     repo_agent_id: str,
@@ -55,4 +57,6 @@ async def deactivate_folder(
         from fastapi import HTTPException
 
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Repository not found")
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
