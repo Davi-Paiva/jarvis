@@ -246,9 +246,14 @@ async def websocket_voice(websocket: WebSocket) -> None:
                 event = await listener_queue.get()
                 if session_id is None:
                     continue
-                async with message_lock:
-                    messages = await voice_service.handle_manager_event(session_id, event)
-                    await _send_messages(websocket, messages)
+                try:
+                    async with message_lock:
+                        messages = await voice_service.handle_manager_event(session_id, event)
+                        await _send_messages(websocket, messages)
+                except WebSocketDisconnect:
+                    return
+                except Exception as exc:
+                    logger.exception("Failed to forward manager event over voice websocket: %s", exc)
 
         listener_task = asyncio.create_task(forward_manager_events())
 
@@ -288,9 +293,35 @@ async def websocket_voice(websocket: WebSocket) -> None:
                         )
                 else:
                     continue
-                await _send_messages(websocket, messages)
+                try:
+                    await _send_messages(websocket, messages)
+                except WebSocketDisconnect:
+                    raise
+                except Exception as exc:
+                    logger.exception("Failed to send voice websocket messages: %s", exc)
+                    fallback = AIResponseMessage(
+                        responseText=(
+                            "I ran into an internal error while preparing that response. "
+                            "Please try again once the planning step is available."
+                        ),
+                        turnId=str(uuid.uuid4()),
+                    )
+                    await websocket.send_text(fallback.model_dump_json())
     except WebSocketDisconnect:
         return
+    except Exception as exc:
+        logger.exception("Voice websocket failed: %s", exc)
+        try:
+            fallback = AIResponseMessage(
+                responseText=(
+                    "I hit an internal error while processing your request. "
+                    "Please try again after checking the backend agent output."
+                ),
+                turnId=str(uuid.uuid4()),
+            )
+            await websocket.send_text(fallback.model_dump_json())
+        except Exception:
+            pass
     finally:
         orchestrator.manager.unregister_listener(listener_queue)
         if listener_task is not None:

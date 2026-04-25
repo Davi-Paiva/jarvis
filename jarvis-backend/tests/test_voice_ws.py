@@ -236,11 +236,11 @@ def _assert_valid_voice_response_pattern(events):
         raise AssertionError(f"Invalid streaming order. Expected START ... END, got: {event_types}")
 
 
-def _app(tmp_path):
+def _app(tmp_path, llm_client=None):
     settings = Settings(
         jarvis_data_dir=str(tmp_path / "data"),
         jarvis_db_path=str(tmp_path / "jarvis.db"),
         jarvis_memory_dir=str(tmp_path / "memory"),
         jarvis_allowed_repo_roots=[str(tmp_path)],
     )
-    return create_app(settings=settings, llm_client=FakeLLMClient())
+    return create_app(settings=settings, llm_client=llm_client or FakeLLMClient())

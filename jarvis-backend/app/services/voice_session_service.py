@@ -726,25 +726,24 @@ class VoiceSessionService:
     def _summarize_turn(self, turn: TurnRequest, repo_name: str) -> str:
         cleaned = " ".join(turn.message.replace("`", "").split())
         if turn.type == TurnType.APPROVAL:
-            summary = _shorten(cleaned, 220)
-            return "I have a plan for %s. %s Do you want me to continue?" % (repo_name, summary)
+            return "I have a plan for %s. %s" % (repo_name, cleaned)
         if turn.type == TurnType.COMPLETION:
-            return _shorten(cleaned, 260)
+            return cleaned
         if turn.type == TurnType.BLOCKING_QUESTION:
-            return "I need your input for %s. %s" % (repo_name, _shorten(cleaned, 220))
+            return "I need your input for %s. %s" % (repo_name, cleaned)
         if turn.type == TurnType.EXPLANATION:
-            return _shorten(cleaned, 260)
+            return cleaned
         if turn.type == TurnType.BRANCH_PERMISSION:
-            return _shorten(cleaned, 260)
+            return cleaned
         if turn.type == TurnType.BRANCH_NAME:
-            return _shorten(cleaned, 260)
+            return cleaned
         if turn.type == TurnType.BRANCH_CONFIRMATION:
-            return _shorten(cleaned, 260)
+            return cleaned
         if turn.type == TurnType.PLAN_STEP_REVIEW:
-            return _shorten(cleaned, 260)
+            return cleaned
         if turn.type == TurnType.EXECUTION_APPROVAL:
-            return _shorten(cleaned, 260)
-        return _shorten(cleaned, 220)
+            return cleaned
+        return cleaned
 
     def _maybe_prompt_for_active_turn(self, runtime: VoiceSessionRuntime) -> List[ServerToClientMessage]:
         active_turn = self._pending_turn_for_repo(runtime.active_repo_agent_id)

@@ -57,6 +57,16 @@ class TaskAgent:
             else:
                 self.state.changed_files = result.changed_files
 
+            if (
+                repo_state.intent_type == "MODIFY_CODE"
+                and self.llm_client.is_live()
+                and not self.state.changed_files
+                and not self.state.proposed_patch
+            ):
+                raise RuntimeError(
+                    "Implementation task completed without proposing any code changes."
+                )
+
             self._set_status(TaskAgentStatus.VALIDATING)
             if result.test_command:
                 code, stdout, stderr = await self.executor.run_allowed_command(

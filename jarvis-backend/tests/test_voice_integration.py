@@ -8,7 +8,12 @@ Simplified tests focusing on key changes:
 
 import pytest
 from app.models.turns import TurnType
-from app.services.voice_session_service import _status_from_phase
+from app.services.voice_session_service import VoiceSessionService, _status_from_phase
+
+from app.config import Settings
+from app.models.turns import TurnRequest
+from app.services.openai_client import FakeLLMClient
+from app.services.orchestrator import JarvisOrchestrator
 
 
 class TestStatusMapping:
@@ -107,3 +112,27 @@ class TestVoiceSessionServiceHasUpdatedMethods:
         """Module should have _status_from_phase function."""
         from app.services.voice_session_service import _status_from_phase
         assert callable(_status_from_phase)
+
+    def test_summarize_turn_keeps_full_plan_step_message(self, tmp_path):
+        settings = Settings(
+            jarvis_data_dir=str(tmp_path / "data"),
+            jarvis_db_path=str(tmp_path / "jarvis.db"),
+            jarvis_memory_dir=str(tmp_path / "memory"),
+            jarvis_allowed_repo_roots=[str(tmp_path)],
+        )
+        orchestrator = JarvisOrchestrator.create(settings=settings, llm_client=FakeLLMClient())
+        service = VoiceSessionService(orchestrator=orchestrator)
+        long_message = (
+            "Step 1: Implement a websocket purchase notification endpoint with repository-specific "
+            "details that should remain fully visible to the user without being truncated at the end."
+        )
+        turn = TurnRequest(
+            agent_id="repo_agent_demo",
+            repo_agent_id="repo_agent_demo",
+            type=TurnType.PLAN_STEP_REVIEW,
+            priority=70,
+            message=long_message,
+            requires_user_response=True,
+        )
+
+        assert service._summarize_turn(turn, "demo-repo") == long_message

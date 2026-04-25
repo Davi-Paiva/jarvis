@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import List, Optional
+from typing import Any, List, Optional, Set
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -250,6 +250,14 @@ class OpenAIAgentsClient(FakeLLMClient):
     def is_live(self) -> bool:
         return self._available
 
+    def _require_live_agent(self) -> None:
+        if self._available:
+            return
+        raise RuntimeError(
+            "OpenAI Agents runtime is not available. "
+            "Configure OPENAI_API_KEY and install the `agents` package with Python 3.9+."
+        )
+
     async def extract_requirements(
         self,
         task_goal: str,
@@ -257,10 +265,7 @@ class OpenAIAgentsClient(FakeLLMClient):
         repo_context: str,
         memory_context: str,
     ) -> List[str]:
-        if not self._available:
-            return await super().extract_requirements(
-                task_goal, acceptance_criteria, repo_context, memory_context
-            )
+        self._require_live_agent()
         prompt = (
             "Extract concise engineering requirements as a JSON array of strings.\n"
             "Goal: %s\nAcceptance criteria: %s\nRepo context:\n%s\nMemory:\n%s"
@@ -280,8 +285,7 @@ class OpenAIAgentsClient(FakeLLMClient):
         repo_context: str,
         memory_context: str,
     ) -> str:
-        if not self._available:
-            return await super().create_plan(state, repo_context, memory_context)
+        self._require_live_agent()
         prompt = (
             "Create a concise implementation plan. Do not include auth or production-only work.\n"
             "State: %s\nRepo context:\n%s\nMemory:\n%s"
@@ -293,25 +297,25 @@ class OpenAIAgentsClient(FakeLLMClient):
         state: RepositoryAgentState,
         plan: str,
     ) -> List[TaskPlanItem]:
-        if not self._available:
-            return await super().split_tasks(state, plan)
+        self._require_live_agent()
         prompt = (
             "Turn this implementation request into 2 to 5 concrete reviewable steps as a JSON array.\n"
             "Each item must have title, description, and scope.\n"
             "Requirements:\n"
             "- Do not just paraphrase the user's request.\n"
+            "- Do not quote or copy the user's original prompt verbatim in any step description.\n"
             "- Make each step specific to repository work.\n"
             "- Separate inspection/design work from implementation and validation.\n"
             "- Keep descriptions concise but actionable.\n"
             "State: %s\n"
             "Plan:\n%s"
         ) % (state.model_dump(mode="json"), plan)
-        output = await self._run_agent("Task splitter agent", prompt)
-        try:
-            parsed = json.loads(output)
-            return [TaskPlanItem.model_validate(item) for item in parsed]
-        except Exception:
-            return await super().split_tasks(state, plan)
+        parsed = await self._run_json_agent(
+            "Task splitter agent",
+            prompt,
+            "Return a JSON array of step objects.",
+        )
+        return _normalize_task_plan_items(parsed)
 
     async def revise_plan_step(
         self,
@@ -321,18 +325,12 @@ class OpenAIAgentsClient(FakeLLMClient):
         repo_context: str,
         memory_context: str,
     ) -> TaskPlanItem:
-        if not self._available:
-            return await super().revise_plan_step(
-                state,
-                current_step,
-                user_feedback,
-                repo_context,
-                memory_context,
-            )
+        self._require_live_agent()
         prompt = (
             "Rewrite this implementation step based on user feedback and return a JSON object "
             "with title, description, and scope.\n"
             "Keep the step reviewable and specific.\n"
+            "Do not quote the user's original task verbatim.\n"
             "Current step: %s\n"
             "User feedback: %s\n"
             "Repo context:\n%s\n"
@@ -343,17 +341,15 @@ class OpenAIAgentsClient(FakeLLMClient):
             repo_context,
             memory_context,
         )
-        output = await self._run_agent("Plan revision agent", prompt)
-        try:
-            return TaskPlanItem.model_validate(json.loads(output))
-        except Exception:
-            return await super().revise_plan_step(
-                state,
-                current_step,
-                user_feedback,
-                repo_context,
-                memory_context,
-            )
+        parsed = await self._run_json_agent(
+            "Plan revision agent",
+            prompt,
+            "Return a JSON object with title, description, and scope.",
+        )
+        items = _normalize_task_plan_items(parsed)
+        if not items:
+            raise RuntimeError("Plan revision agent did not return a usable plan step.")
+        return items[0]
 
     async def implement_task(
         self,
@@ -362,31 +358,30 @@ class OpenAIAgentsClient(FakeLLMClient):
         repo_context: str,
         memory_context: str,
     ) -> TaskImplementationResult:
-        if not self._available:
-            return await super().implement_task(repo_state, task_state, repo_context, memory_context)
         prompt = (
             "Propose implementation output as JSON with result_summary, proposed_patch, changed_files, test_command.\n"
+            "This is a real repository modification flow, not an analysis-only flow.\n"
             "If code changes are needed, `proposed_patch` must be a raw unified git diff string.\n"
             "Do not wrap the patch in markdown fences.\n"
             "Do not add commentary before or after the diff.\n"
-            "If no code changes are needed, set `proposed_patch` to null.\n"
+            "For MODIFY_CODE tasks, do not set `proposed_patch` to null unless the repository already fully satisfies the request.\n"
             "`test_command` must be either null or a real shell command that can be executed from the repository root.\n"
             "Never use explanatory prose in `test_command`.\n"
             "Only include patches inside scope. Task: %s\nRepo context:\n%s\nMemory:\n%s"
         ) % (task_state.model_dump(mode="json"), repo_context, memory_context)
-        output = await self._run_agent("Task implementation agent", prompt)
-        try:
-            return TaskImplementationResult.model_validate(json.loads(output))
-        except Exception:
-            return TaskImplementationResult(result_summary=output)
+        parsed = await self._run_json_agent(
+            "Task implementation agent",
+            prompt,
+            "Return a JSON object matching TaskImplementationResult.",
+        )
+        return TaskImplementationResult.model_validate(parsed)
 
     async def final_report(
         self,
         repo_state: RepositoryAgentState,
         task_states: List[TaskAgentState],
     ) -> str:
-        if not self._available:
-            return await super().final_report(repo_state, task_states)
+        self._require_live_agent()
         prompt = (
             "Create a concise final report for the user.\nState: %s\nTasks: %s"
         ) % (
@@ -396,6 +391,7 @@ class OpenAIAgentsClient(FakeLLMClient):
         return await self._run_agent("Final report agent", prompt)
 
     async def _run_agent(self, name: str, prompt: str) -> str:
+        self._require_live_agent()
         agent = self._agent_cls(  # type: ignore[misc]
             name=name,
             model=self.settings.openai_model,
@@ -403,3 +399,174 @@ class OpenAIAgentsClient(FakeLLMClient):
         )
         result = await self._runner_cls.run(agent, prompt)  # type: ignore[union-attr]
         return str(result.final_output)
+
+    async def _run_json_agent(self, name: str, prompt: str, shape_hint: str) -> Any:
+        raw_output = await self._run_agent(name, prompt)
+        parsed = _extract_json_payload(raw_output)
+        if parsed is not None:
+            return parsed
+
+        repair_prompt = (
+            "Convert the following model output into strict JSON only.\n"
+            "%s\n"
+            "Do not add markdown fences or commentary.\n"
+            "Original output:\n%s"
+        ) % (shape_hint, raw_output)
+        repaired_output = await self._run_agent(f"{name} JSON repair", repair_prompt)
+        repaired = _extract_json_payload(repaired_output)
+        if repaired is not None:
+            return repaired
+        raise RuntimeError("%s did not return valid JSON output." % name)
+
+
+def _extract_json_payload(raw_output: str) -> Optional[Any]:
+    candidates = [raw_output.strip()]
+
+    fenced_json = re.findall(r"```(?:json)?\s*(.*?)```", raw_output, flags=re.DOTALL)
+    candidates.extend(item.strip() for item in fenced_json if item.strip())
+
+    array_match = re.search(r"(\[\s*[\s\S]*\])", raw_output)
+    if array_match:
+        candidates.append(array_match.group(1).strip())
+
+    object_match = re.search(r"(\{\s*[\s\S]*\})", raw_output)
+    if object_match:
+        candidates.append(object_match.group(1).strip())
+
+    seen: Set[str] = set()
+    for candidate in candidates:
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        try:
+            return json.loads(candidate)
+        except Exception:
+            continue
+    return None
+
+
+def _normalize_task_plan_items(parsed: Any) -> List[TaskPlanItem]:
+    raw_items = _unwrap_task_plan_payload(parsed)
+    plan_items: List[TaskPlanItem] = []
+    for index, item in enumerate(raw_items):
+        normalized = _coerce_task_plan_item(item, index)
+        if normalized is None:
+            continue
+        plan_items.append(TaskPlanItem.model_validate(normalized))
+    if not plan_items:
+        raise RuntimeError("Planning agent did not return any usable plan steps.")
+    return plan_items
+
+
+def _unwrap_task_plan_payload(parsed: Any) -> List[Any]:
+    if isinstance(parsed, list):
+        return parsed
+    if isinstance(parsed, dict):
+        for key in ("steps", "plan_steps", "items", "tasks", "plan", "result", "data"):
+            value = parsed.get(key)
+            if isinstance(value, list):
+                return value
+            if isinstance(value, dict):
+                if any(
+                    field in value
+                    for field in ("title", "description", "name", "details", "step")
+                ):
+                    return [value]
+                nested = _unwrap_task_plan_payload(value)
+                if nested and nested != [value]:
+                    return nested
+        return [parsed]
+    return [parsed]
+
+
+def _coerce_task_plan_item(item: Any, index: int) -> Optional[dict]:
+    if isinstance(item, TaskPlanItem):
+        return item.model_dump(mode="python")
+
+    if isinstance(item, str):
+        description = item.strip()
+        if not description:
+            return None
+        return {
+            "title": "Implementation step %s" % (index + 1),
+            "description": description,
+            "scope": [],
+        }
+
+    if isinstance(item, list):
+        flattened = " ".join(str(part).strip() for part in item if str(part).strip())
+        if not flattened:
+            return None
+        return {
+            "title": "Implementation step %s" % (index + 1),
+            "description": flattened,
+            "scope": [],
+        }
+
+    if not isinstance(item, dict):
+        return {
+            "title": "Implementation step %s" % (index + 1),
+            "description": str(item).strip(),
+            "scope": [],
+        }
+
+    nested_step = _first_present(
+        item,
+        ["step", "item", "task", "plan_step", "payload"],
+    )
+    if isinstance(nested_step, dict):
+        merged = dict(nested_step)
+        for key, value in item.items():
+            merged.setdefault(key, value)
+        item = merged
+
+    title = _first_text(
+        item,
+        ["title", "name", "step", "summary", "label"],
+    ) or "Implementation step %s" % (index + 1)
+    description = _first_text(
+        item,
+        [
+            "description",
+            "details",
+            "content",
+            "objective",
+            "reasoning",
+            "summary",
+            "body",
+            "instruction",
+            "task",
+            "title",
+        ],
+    ) or title
+    scope = _first_present(
+        item,
+        ["scope", "scopes", "paths", "files", "modules", "directories", "areas", "targets"],
+    )
+
+    return {
+        "title": title,
+        "description": description,
+        "scope": scope or [],
+    }
+
+
+def _first_text(payload: dict, keys: List[str]) -> Optional[str]:
+    for key in keys:
+        value = payload.get(key)
+        if value is None:
+            continue
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        if not isinstance(value, (dict, list, tuple, set)):
+            text = str(value).strip()
+            if text:
+                return text
+    return None
+
+
+def _first_present(payload: dict, keys: List[str]) -> Any:
+    for key in keys:
+        if key in payload:
+            return payload[key]
+    return None

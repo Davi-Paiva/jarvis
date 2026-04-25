@@ -277,9 +277,24 @@ class RepositoryAgent:
                     return self.state
         else:
             # Old flow: split tasks using LLM
-            task_plan = await self.llm_client.split_tasks(self.state, self.state.plan or "")
+            try:
+                task_plan = await self.llm_client.split_tasks(self.state, self.state.plan or "")
+            except Exception as exc:
+                return self._fail_planning_step(
+                    user_message=(
+                        "I couldn't prepare executable subtasks from the approved plan, so I "
+                        "stopped before touching the repository. Please try again."
+                    ),
+                    context="RepositoryAgent failed while deriving executable subtasks.",
+                    exc=exc,
+                )
             task_states: List[TaskAgentState] = []
-            for task_item in task_plan:
+            for raw_task_item in task_plan:
+                task_item = (
+                    raw_task_item
+                    if isinstance(raw_task_item, TaskPlanItem)
+                    else TaskPlanItem.model_validate(raw_task_item)
+                )
                 task_state = TaskAgentState(
                     repo_agent_id=self.state.repo_agent_id,
                     title=task_item.title,
@@ -502,44 +517,50 @@ class RepositoryAgent:
         memory_context = self.memory_service.render_memory_for_llm(self.state.repo_agent_id).text
 
         task_goal = self.state.task_goal or self.state.original_user_prompt or ""
-        self.state.requirements = await self.llm_client.extract_requirements(
-            task_goal=task_goal,
-            acceptance_criteria=self.state.acceptance_criteria,
-            repo_context=repo_context,
-            memory_context=memory_context,
-        )
-        self.state.plan = await self.llm_client.create_plan(
-            state=self.state,
-            repo_context=repo_context,
-            memory_context=memory_context,
-        )
-        self.registry.save_agent_state(self.state)
-
         try:
+            self.state.requirements = await self.llm_client.extract_requirements(
+                task_goal=task_goal,
+                acceptance_criteria=self.state.acceptance_criteria,
+                repo_context=repo_context,
+                memory_context=memory_context,
+            )
+            self.state.plan = await self.llm_client.create_plan(
+                state=self.state,
+                repo_context=repo_context,
+                memory_context=memory_context,
+            )
+            self.registry.save_agent_state(self.state)
+
             task_plan = await self.llm_client.split_tasks(self.state, self.state.plan or "")
-            plan_steps = []
-            for idx, task_item in enumerate(task_plan):
-                plan_steps.append(
-                    {
-                        "index": idx,
-                        "title": task_item.title,
-                        "description": task_item.description,
-                        "scope": task_item.scope or [],
-                        "status": "PROPOSED",
-                        "user_feedback": [],
-                    }
-                )
-        except Exception:
-            plan_steps = [
+        except Exception as exc:
+            return self._fail_planning_step(
+                user_message=(
+                    "I couldn't turn that request into a usable step-by-step plan, so I stopped "
+                    "before making changes. Please try again once the planning output is valid."
+                ),
+                context="RepositoryAgent failed while generating the reviewable task plan.",
+                exc=exc,
+            )
+        plan_steps = []
+        for idx, raw_task_item in enumerate(task_plan):
+            task_item = (
+                raw_task_item
+                if isinstance(raw_task_item, TaskPlanItem)
+                else TaskPlanItem.model_validate(raw_task_item)
+            )
+            plan_steps.append(
                 {
-                    "index": 0,
-                    "title": "Implement requested change",
-                    "description": task_goal,
-                    "scope": [],
+                    "index": idx,
+                    "title": task_item.title,
+                    "description": task_item.description,
+                    "scope": task_item.scope or [],
                     "status": "PROPOSED",
                     "user_feedback": [],
                 }
-            ]
+            )
+
+        if not plan_steps:
+            raise RuntimeError("Planning agent did not return any reviewable plan steps.")
 
         self.state.plan_steps = plan_steps
         self.state.current_plan_step_index = 0
@@ -627,13 +648,25 @@ class RepositoryAgent:
                 memory_context = self.memory_service.render_memory_for_llm(
                     self.state.repo_agent_id
                 ).text
-                revised_step = await self.llm_client.revise_plan_step(
-                    state=self.state,
-                    current_step=current_step,
-                    user_feedback=text,
-                    repo_context=repo_context,
-                    memory_context=memory_context,
-                )
+                try:
+                    revised_step = await self.llm_client.revise_plan_step(
+                        state=self.state,
+                        current_step=current_step,
+                        user_feedback=text,
+                        repo_context=repo_context,
+                        memory_context=memory_context,
+                    )
+                    if not isinstance(revised_step, TaskPlanItem):
+                        revised_step = TaskPlanItem.model_validate(revised_step)
+                except Exception as exc:
+                    return self._fail_planning_step(
+                        user_message=(
+                            "I couldn't revise that plan step because the generated planning output "
+                            "was not usable. Please try again."
+                        ),
+                        context="RepositoryAgent failed while revising a plan step.",
+                        exc=exc,
+                    )
                 self.state.plan_steps[step_index]["title"] = revised_step.title
                 self.state.plan_steps[step_index]["description"] = revised_step.description
                 self.state.plan_steps[step_index]["scope"] = revised_step.scope
@@ -724,6 +757,25 @@ class RepositoryAgent:
         )
         self.manager.enqueue_turn(turn)
         return turn
+
+    def _fail_planning_step(
+        self,
+        user_message: str,
+        context: str,
+        exc: Exception,
+    ) -> RepositoryAgentState:
+        self.manager.release_intake_lock(self.state.repo_agent_id)
+        self.state.phase = RepositoryAgentPhase.FAILED
+        self.state.last_error = str(exc)
+        self.registry.save_agent_state(self.state)
+        self._enqueue_turn(
+            turn_type=TurnType.COMPLETION,
+            priority=40,
+            message=user_message,
+            context="%s Error: %s" % (context, exc),
+            requires_user_response=False,
+        )
+        return self.state
 
     def _build_repo_context(self) -> str:
         files = self.executor.list_files(self.state.repo_path, max_files=160)
