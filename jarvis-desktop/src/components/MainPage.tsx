@@ -56,6 +56,7 @@ function MainPage({ initialFolder, initialRepoAgentId }: MainPageProps) {
   const wsRef = useRef<SessionWebSocket | null>(null);
   const selectedRepoAgentIdRef = useRef<string | undefined>(initialRepoAgentId);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
 
   const selectedFolder = useMemo(
     () => folders.find((folder) => folder.id === selectedFolderId),
