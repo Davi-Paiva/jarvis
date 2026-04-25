@@ -1,0 +1,13 @@
+pydantic>=2.7,<3
+python-dotenv>=1.0,<2
+fastapi>=0.110,<1
+uvicorn[standard]>=0.29,<1
+httpx>=0.27,<1
+pytest>=7.4,<8
+
+# Agent runtime dependencies. They are optional at import-time in the code so
+# the local demo/test loop can still run on older Python versions.
+openai-agents>=0.2.0; python_version >= "3.9"
+langgraph>=0.2.0; python_version >= "3.9"
+langgraph-checkpoint-sqlite>=2.0.0; python_version >= "3.9"
+

@@ -1,0 +1,132 @@
+from __future__ import annotations
+
+from typing import Any, List, Optional
+
+from app.agents.repository_agent import RepositoryAgent
+from app.config import Settings
+from app.models.repository import RepositoryAgentState
+from app.models.schemas import AgentStateOutput
+from app.models.turns import TurnRequest
+from app.services.global_manager import GlobalManager
+from app.services.graph_checkpointer import create_langgraph_sqlite_checkpointer
+from app.services.local_executor import LocalExecutor
+from app.services.memory_store import MarkdownMemoryStore
+from app.services.openai_client import LLMClient, OpenAIAgentsClient
+from app.services.persistence import SQLitePersistence
+from app.services.repository_registry import RepositoryRegistry
+from app.services.turn_scheduler import TurnScheduler
+
+
+class JarvisOrchestrator:
+    """Facade intended to be called by tests now and API adapters later."""
+
+    def __init__(
+        self,
+        settings: Settings,
+        registry: RepositoryRegistry,
+        manager: GlobalManager,
+        executor: LocalExecutor,
+        llm_client: LLMClient,
+        memory_store: MarkdownMemoryStore,
+        graph_checkpointer: Optional[Any] = None,
+    ) -> None:
+        self.settings = settings
+        self.registry = registry
+        self.manager = manager
+        self.executor = executor
+        self.llm_client = llm_client
+        self.memory_store = memory_store
+        self.graph_checkpointer = graph_checkpointer
+
+    @classmethod
+    def create(
+        cls,
+        settings: Settings,
+        llm_client: Optional[LLMClient] = None,
+    ) -> "JarvisOrchestrator":
+        settings.ensure_directories()
+        persistence = SQLitePersistence(settings.jarvis_db_path)
+        memory_store = MarkdownMemoryStore(settings.jarvis_memory_dir)
+        registry = RepositoryRegistry(settings, persistence, memory_store)
+        scheduler = TurnScheduler(persistence)
+        manager = GlobalManager(scheduler, persistence)
+        executor = LocalExecutor(settings)
+        graph_checkpointer = create_langgraph_sqlite_checkpointer(settings.jarvis_db_path)
+        return cls(
+            settings=settings,
+            registry=registry,
+            manager=manager,
+            executor=executor,
+            llm_client=llm_client or OpenAIAgentsClient(settings),
+            memory_store=memory_store,
+            graph_checkpointer=graph_checkpointer,
+        )
+
+    async def create_repo_agent(
+        self,
+        repo_path: str,
+        display_name: Optional[str] = None,
+        branch_name: Optional[str] = None,
+    ) -> RepositoryAgentState:
+        return self.registry.create_repo_agent(
+            repo_path=repo_path,
+            display_name=display_name,
+            branch_name=branch_name,
+            user_id=self.settings.jarvis_user_id,
+        )
+
+    async def start_task(
+        self,
+        repo_agent_id: str,
+        message: str,
+        acceptance_criteria: Optional[List[str]] = None,
+    ) -> AgentStateOutput:
+        state = self.registry.get_agent_state(repo_agent_id)
+        agent = self._repository_agent(state)
+        updated = await agent.start_task(message, acceptance_criteria=acceptance_criteria)
+        return AgentStateOutput(
+            agent=updated,
+            next_turn=self.manager.get_next_turn(updated.user_id),
+        )
+
+    async def submit_user_response(
+        self,
+        turn_id: str,
+        response: str,
+        approved: Optional[bool] = None,
+    ) -> AgentStateOutput:
+        turn = self.manager.get_turn(turn_id)
+        if turn is None:
+            raise KeyError("Unknown turn_id: %s" % turn_id)
+        turn_response = self.manager.record_user_response(
+            turn_id=turn_id,
+            response=response,
+            approved=approved,
+        )
+        state = self.registry.get_agent_state(turn.repo_agent_id)
+        agent = self._repository_agent(state)
+        updated = await agent.handle_user_response(turn, turn_response)
+        return AgentStateOutput(
+            agent=updated,
+            next_turn=self.manager.get_next_turn(updated.user_id),
+        )
+
+    async def get_next_turn(self, user_id: Optional[str] = None) -> Optional[TurnRequest]:
+        return self.manager.get_next_turn(user_id or self.settings.jarvis_user_id)
+
+    async def get_agent_state(self, repo_agent_id: str) -> RepositoryAgentState:
+        return self.registry.get_agent_state(repo_agent_id)
+
+    async def list_repo_agents(self) -> List[RepositoryAgentState]:
+        return self.registry.list_agents(user_id=self.settings.jarvis_user_id)
+
+    def _repository_agent(self, state: RepositoryAgentState) -> RepositoryAgent:
+        return RepositoryAgent(
+            state=state,
+            registry=self.registry,
+            manager=self.manager,
+            executor=self.executor,
+            llm_client=self.llm_client,
+            memory_store=self.memory_store,
+            graph_checkpointer=self.graph_checkpointer,
+        )
