@@ -1,8 +1,11 @@
 package com.jarvis.intellij.ui
 
+import com.intellij.openapi.fileEditor.FileEditorManager
+import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.VirtualFile
+import com.intellij.openapi.editor.ScrollType
 import com.intellij.ui.components.JBList
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.JBTextArea
@@ -31,7 +34,10 @@ class JarvisToolWindowPanel(private val project: Project) : JPanel(BorderLayout(
     private val resultsArea = JBTextArea()
 
     private var currentAnalysis: AnalyzeResponse? = null
-    private var currentStepIndex = 0
+    private var currentFileItem: ProjectFileItem? = null
+    private var currentChangedLines: List<Int> = emptyList()
+    private var currentLineSummaries: Map<Int, String> = emptyMap()
+    private var currentChangedLineIndex = 0
 
     init {
         buildUi()
@@ -96,7 +102,10 @@ class JarvisToolWindowPanel(private val project: Project) : JPanel(BorderLayout(
         nextStepButton.isEnabled = false
         fileListModel.clear()
         currentAnalysis = null
-        currentStepIndex = 0
+        currentFileItem = null
+        currentChangedLines = emptyList()
+        currentLineSummaries = emptyMap()
+        currentChangedLineIndex = 0
         resultsArea.text = "Loading changed files..."
         statusLabel.text = "Running git diff..."
 
@@ -125,20 +134,26 @@ class JarvisToolWindowPanel(private val project: Project) : JPanel(BorderLayout(
 
     private fun analyzeSelectedFile(item: ProjectFileItem) {
         logger.info("Analyzing file ${item.displayPath}")
+        currentFileItem = item
         nextStepButton.isEnabled = false
         currentAnalysis = null
-        currentStepIndex = 0
+        currentChangedLines = emptyList()
+        currentLineSummaries = emptyMap()
+        currentChangedLineIndex = 0
         statusLabel.text = "Analyzing ${item.displayPath}..."
         resultsArea.text = "Reading ${item.displayPath} and sending it to Jarvis..."
+        openFile(item.file)
 
         analysisCoordinator.analyzeFile(
             file = item.file,
             fileLabel = item.displayPath,
-            onSuccess = { response ->
-                currentAnalysis = response
-                currentStepIndex = 0
-                statusLabel.text = "Analysis ready for ${item.displayPath}."
-                renderAnalysis()
+            onSuccess = { result ->
+                currentAnalysis = result.response
+                currentChangedLines = result.changedLines
+                currentLineSummaries = result.response.lineExplanations
+                    .associate { it.lineNumber to it.summary }
+                currentChangedLineIndex = 0
+                focusCurrentChangedLine()
             },
             onError = { message ->
                 statusLabel.text = message
@@ -149,53 +164,83 @@ class JarvisToolWindowPanel(private val project: Project) : JPanel(BorderLayout(
 
     private fun renderAnalysis() {
         val analysis = currentAnalysis ?: return
-        resultsArea.text = buildString {
-            appendLine("Summary")
-            appendLine(analysis.summary.ifBlank { "No summary returned." })
-            appendLine()
+        val currentLine = currentChangedLines.getOrNull(currentChangedLineIndex)
+        val currentLineSummary = currentLine?.let { currentLineSummaries[it] }
 
-            if (analysis.steps.isEmpty()) {
-                appendLine("Steps")
-                appendLine("No explanation steps returned.")
-            } else {
-                appendLine("Current Step (${currentStepIndex + 1}/${analysis.steps.size})")
-                appendLine(analysis.steps[currentStepIndex])
+        resultsArea.text = buildString {
+            append(analysis.summary.ifBlank { "No summary returned." })
+
+            if (currentLine != null && !currentLineSummary.isNullOrBlank()) {
                 appendLine()
-                appendLine("All Steps")
-                analysis.steps.forEachIndexed { index, step ->
-                    val prefix = if (index == currentStepIndex) ">" else "-"
-                    appendLine("$prefix ${index + 1}. $step")
-                }
+                appendLine()
+                appendLine("Changed line ${currentChangedLineIndex + 1}/${currentChangedLines.size} (L$currentLine)")
+                append(currentLineSummary)
             }
-        }.trim()
+        }
         resultsArea.caretPosition = 0
         updateNextStepButton()
     }
 
     private fun showNextStep() {
-        val analysis = currentAnalysis ?: return
-        if (analysis.steps.isEmpty()) {
+        if (currentChangedLines.isEmpty()) {
             return
         }
 
-        currentStepIndex = (currentStepIndex + 1) % analysis.steps.size
-        renderAnalysis()
+        currentChangedLineIndex = (currentChangedLineIndex + 1) % currentChangedLines.size
+        focusCurrentChangedLine()
     }
 
     private fun updateNextStepButton() {
-        val steps = currentAnalysis?.steps.orEmpty()
-        if (steps.size <= 1) {
+        if (currentChangedLines.size <= 1) {
             nextStepButton.isEnabled = false
             nextStepButton.text = "Next Step"
             return
         }
 
         nextStepButton.isEnabled = true
-        nextStepButton.text = if (currentStepIndex == steps.lastIndex) {
-            "Restart Steps"
-        } else {
-            "Next Step"
+        nextStepButton.text = "Next Step"
+    }
+
+    private fun focusCurrentChangedLine() {
+        val item = currentFileItem ?: return
+        val changedLine = currentChangedLines.getOrNull(currentChangedLineIndex)
+        val editor = openFile(item.file, changedLine)
+
+        if (changedLine == null) {
+            statusLabel.text = "Analysis ready for ${item.displayPath}."
+            renderAnalysis()
+            return
         }
+
+        editor?.let { highlightLine(it, changedLine) }
+        statusLabel.text = "Analysis ready for ${item.displayPath}. Changed line ${currentChangedLineIndex + 1}/${currentChangedLines.size}."
+        renderAnalysis()
+    }
+
+    private fun openFile(file: VirtualFile, lineNumber: Int? = null) =
+        FileEditorManager.getInstance(project).openTextEditor(
+            OpenFileDescriptor(
+                project,
+                file,
+                ((lineNumber ?: 1) - 1).coerceAtLeast(0),
+                0,
+            ),
+            true,
+        )
+
+    private fun highlightLine(editor: com.intellij.openapi.editor.Editor, lineNumber: Int) {
+        val document = editor.document
+        if (document.lineCount == 0) {
+            return
+        }
+
+        val zeroBasedLine = (lineNumber - 1).coerceIn(0, document.lineCount - 1)
+        val startOffset = document.getLineStartOffset(zeroBasedLine)
+        val endOffset = document.getLineEndOffset(zeroBasedLine)
+
+        editor.caretModel.moveToOffset(startOffset)
+        editor.selectionModel.setSelection(startOffset, endOffset)
+        editor.scrollingModel.scrollToCaret(ScrollType.CENTER)
     }
 
     private fun toDisplayPath(file: VirtualFile): String {

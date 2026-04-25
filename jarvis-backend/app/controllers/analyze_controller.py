@@ -13,7 +13,7 @@ class AnalyzeRequestError(ValueError):
     """Raised when the analyze request payload is incomplete."""
 
 
-def analyze_file(
+async def analyze_file(
     payload: AnalyzeInput,
     service: AnalyzeService | None = None,
 ) -> AnalyzeOutput:
@@ -25,5 +25,10 @@ def analyze_file(
         raise AnalyzeRequestError("fileName and content are required.")
 
     logger.info("Analyzing %s (%d chars)", file_name, len(content))
+    logger.info(
+        "Received git diff for %s:\n--- BEGIN GIT DIFF ---\n%s\n--- END GIT DIFF ---",
+        file_name,
+        diff or "<empty diff>",
+    )
     analyzer = service or AnalyzeService()
-    return analyzer.analyze(file_name=file_name, content=content, diff=diff)
+    return await analyzer.analyze(file_name=file_name, content=content, diff=diff)

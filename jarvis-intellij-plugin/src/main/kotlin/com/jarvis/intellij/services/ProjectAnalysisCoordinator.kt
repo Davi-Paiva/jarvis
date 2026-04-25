@@ -34,7 +34,7 @@ class ProjectAnalysisCoordinator(
     fun analyzeFile(
         file: VirtualFile,
         fileLabel: String,
-        onSuccess: (AnalyzeResponse) -> Unit,
+        onSuccess: (FileAnalysisResult) -> Unit,
         onError: (String) -> Unit,
     ) {
         runAsync(
@@ -42,7 +42,10 @@ class ProjectAnalysisCoordinator(
             work = {
                 val content = fileService.readFileContent(file)
                 val diff = gitService.getDiffForFile(project, fileLabel, content)
-                apiClient.analyzeFile(fileLabel, content, diff)
+                FileAnalysisResult(
+                    response = apiClient.analyzeFile(fileLabel, content, diff),
+                    changedLines = gitService.getChangedLineNumbers(diff),
+                )
             },
             onSuccess = onSuccess,
             onError = onError,
@@ -84,3 +87,8 @@ class ProjectAnalysisCoordinator(
         }
     }
 }
+
+data class FileAnalysisResult(
+    val response: AnalyzeResponse,
+    val changedLines: List<Int>,
+)

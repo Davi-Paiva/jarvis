@@ -4,6 +4,7 @@ import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
 import java.io.File
 import java.io.IOException
+import kotlin.math.max
 import java.util.concurrent.TimeUnit
 
 class GitService {
@@ -93,6 +94,34 @@ class GitService {
         return trackedDiff.output
     }
 
+    fun getChangedLineNumbers(diff: String): List<Int> {
+        if (diff.isBlank()) {
+            return emptyList()
+        }
+
+        val changedLines = linkedSetOf<Int>()
+        diff.lineSequence().forEach { line ->
+            val match = HUNK_HEADER_REGEX.find(line) ?: return@forEach
+            val startLine = match.groupValues[1].toIntOrNull() ?: return@forEach
+            val count = match.groupValues[2].toIntOrNull() ?: 1
+
+            if (count == 0) {
+                if (startLine > 0) {
+                    changedLines += max(1, startLine)
+                }
+                return@forEach
+            }
+
+            for (lineNumber in startLine until (startLine + count)) {
+                if (lineNumber > 0) {
+                    changedLines += lineNumber
+                }
+            }
+        }
+
+        return changedLines.toList()
+    }
+
     private fun runGitCommand(projectRoot: String, vararg command: String): GitCommandResult {
         val process = try {
             ProcessBuilder(*command)
@@ -173,6 +202,10 @@ class GitService {
     }
 
     private fun normalizePath(path: String): String = path.replace('\\', '/').trim()
+
+    companion object {
+        private val HUNK_HEADER_REGEX = Regex("@@ -\\d+(?:,\\d+)? \\+(\\d+)(?:,(\\d+))? @@")
+    }
 }
 
 class GitServiceException(message: String, cause: Throwable? = null) : Exception(message, cause)

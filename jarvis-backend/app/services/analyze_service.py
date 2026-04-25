@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 
 from app.models.schemas import AnalyzeOutput
+from app.services.openai_client import LLMClient
 
 
 logger = logging.getLogger(__name__)
@@ -24,9 +25,12 @@ class ChangeInsight:
 
 
 class AnalyzeService:
-    """Builds a lightweight explanation for a source file using simple heuristics."""
+    """Builds change explanations, using the configured LLM when diff context is available."""
 
-    def analyze(self, file_name: str, content: str, diff: str = "") -> AnalyzeOutput:
+    def __init__(self, llm_client: LLMClient | None = None) -> None:
+        self.llm_client = llm_client
+
+    async def analyze(self, file_name: str, content: str, diff: str = "") -> AnalyzeOutput:
         normalized_name = file_name.lower()
         normalized_content = content.lower()
         line_count = len(content.splitlines()) or 1
@@ -37,11 +41,18 @@ class AnalyzeService:
         change_insight = self._analyze_diff(diff)
 
         logger.info(
-            "Generated mock analysis for %s as %s / %s",
+            "Generated analysis for %s as %s / %s",
             file_name,
             file_type,
             role,
         )
+
+        if diff and self.llm_client is not None:
+            return await self.llm_client.explain_file_change(
+                file_name=file_name,
+                content=content,
+                diff=diff,
+            )
 
         if change_insight is not None:
             return AnalyzeOutput(
@@ -182,7 +193,7 @@ class AnalyzeService:
         return (
             f"This change {insight.change_type} {file_name} by {balance}. "
             f"It mainly changes {insight.focus}.{symbol_clause} "
-            f"The likely reason is to {insight.reason}."
+            f"The change is meant to {insight.reason}."
         )
 
     def _build_steps(
@@ -217,7 +228,7 @@ class AnalyzeService:
         return [
             f"What changed: this edit {changed_text}.",
             f"Where it changed: the update centers on {touched_symbols} and shifts {insight.focus}.",
-            f"Why it likely changed: to {insight.reason}.",
+            f"Why: this change is meant to {insight.reason}.",
         ]
 
     def _collect_examples(self, lines: list[str], limit: int = 2) -> list[str]:

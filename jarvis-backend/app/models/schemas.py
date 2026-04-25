@@ -43,9 +43,15 @@ class AnalyzeInput(BaseModel):
     diff: Optional[str] = None
 
 
+class AnalyzeLineExplanation(BaseModel):
+    lineNumber: int
+    summary: str
+
+
 class AnalyzeOutput(BaseModel):
     summary: str
     steps: List[str] = Field(default_factory=list)
+    lineExplanations: List[AnalyzeLineExplanation] = Field(default_factory=list)
 
 
 class StartTaskInput(BaseModel):

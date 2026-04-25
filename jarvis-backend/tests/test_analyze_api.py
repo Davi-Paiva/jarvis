@@ -38,20 +38,25 @@ def test_post_analyze_describes_the_change_and_reason_when_diff_is_present(tmp_p
                 "fileName": "jarvis-intellij-plugin/src/main/kotlin/com/jarvis/intellij/network/JarvisApiClient.kt",
                 "content": "class JarvisApiClient {\n    private val httpClient = HttpClient.newBuilder()\n        .version(HttpClient.Version.HTTP_1_1)\n        .build()\n}\n",
                 "diff": """diff --git a/jarvis-intellij-plugin/src/main/kotlin/com/jarvis/intellij/network/JarvisApiClient.kt b/jarvis-intellij-plugin/src/main/kotlin/com/jarvis/intellij/network/JarvisApiClient.kt
-@@ -1,3 +1,4 @@
+@@ -2,0 +3,1 @@
 +        .version(HttpClient.Version.HTTP_1_1)
--        .build()
-+        .build()
 """,
             },
         )
 
     assert response.status_code == 200
     payload = response.json()
-    assert "likely reason" in payload["summary"].lower()
-    assert "http compatibility" in payload["summary"].lower()
+    combined_text = " ".join([payload["summary"], *payload["steps"]]).lower()
+    assert "http" in combined_text
+    assert "what changed:" in combined_text
+    assert "why:" in combined_text
+    assert "likely" not in combined_text
+    assert "probably" not in combined_text
     assert payload["steps"][0].lower().startswith("what changed:")
-    assert payload["steps"][2].lower().startswith("why it likely changed:")
+    assert payload["steps"][1].lower().startswith("why:")
+    assert payload["lineExplanations"]
+    assert payload["lineExplanations"][0]["lineNumber"] == 3
+    assert "http" in payload["lineExplanations"][0]["summary"].lower()
 
 
 def test_post_analyze_returns_400_when_required_fields_are_missing(tmp_path):
