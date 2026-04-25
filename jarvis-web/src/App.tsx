@@ -22,6 +22,7 @@ function App() {
         transcript={session.transcript}
         messages={session.messages}
         activeAgent={session.activeAgent}
+        getVolume={session.getVolume}
         onSendMessage={session.sendMessage}
       />
       {/* pendingApproval && <ApprovalModal approval={pendingApproval} /> */}

@@ -6,6 +6,7 @@ type UseAudioPlaybackReturn = {
   playFromBase64: (audioBase64: string, mimeType?: string) => Promise<boolean>
   stop: () => void
   isPlaying: boolean
+  getVolume: () => number
 }
 
 function base64ToBlob(base64: string, mimeType: string): Blob {
@@ -23,6 +24,8 @@ function base64ToBlob(base64: string, mimeType: string): Blob {
 export function useAudioPlayback(): UseAudioPlaybackReturn {
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const audioContextRef = useRef<AudioContext | null>(null)
+  const analyserRef = useRef<AnalyserNode | null>(null)
+  const freqDataRef = useRef<Uint8Array>(new Uint8Array(0))
   const sourceRef = useRef<AudioBufferSourceNode | null>(null)
   const objectUrlRef = useRef<string | null>(null)
   const [isPlaying, setIsPlaying] = useState(false)
@@ -37,8 +40,15 @@ export function useAudioPlayback(): UseAudioPlaybackReturn {
       return null
     }
 
-    audioContextRef.current = new Ctx()
-    return audioContextRef.current
+    const ctx = new Ctx()
+    const analyser = ctx.createAnalyser()
+    analyser.fftSize = 256
+    analyser.smoothingTimeConstant = 0.8
+    analyser.connect(ctx.destination)
+    analyserRef.current = analyser
+    freqDataRef.current = new Uint8Array(analyser.frequencyBinCount)
+    audioContextRef.current = ctx
+    return ctx
   }, [])
 
   const unlock = useCallback(async () => {
@@ -98,7 +108,19 @@ export function useAudioPlayback(): UseAudioPlaybackReturn {
 
       stop()
       const audio = new Audio(src)
+      audio.crossOrigin = 'anonymous'
       audioRef.current = audio
+
+      // Tap into Web Audio analyser if available
+      const context = getAudioContext()
+      if (context && analyserRef.current) {
+        try {
+          const mediaSource = context.createMediaElementSource(audio)
+          mediaSource.connect(analyserRef.current)
+        } catch {
+          // ignore – element may already be connected
+        }
+      }
 
       const played = await new Promise<boolean>((resolve) => {
         audio.onplaying = () => {
@@ -118,7 +140,7 @@ export function useAudioPlayback(): UseAudioPlaybackReturn {
 
       return played
     },
-    [stop],
+    [getAudioContext, stop],
   )
 
   const playFromBase64 = useCallback(
@@ -150,7 +172,12 @@ export function useAudioPlayback(): UseAudioPlaybackReturn {
         const decoded = await context.decodeAudioData(arrayBuffer)
         const source = context.createBufferSource()
         source.buffer = decoded
-        source.connect(context.destination)
+        source.connect(analyserRef.current ?? context.destination)
+        if (analyserRef.current) {
+          // analyser already connected to destination; don't double-connect
+        } else {
+          source.connect(context.destination)
+        }
         sourceRef.current = source
 
         const played = await new Promise<boolean>((resolve) => {
@@ -179,5 +206,15 @@ export function useAudioPlayback(): UseAudioPlaybackReturn {
     [clearObjectUrl, getAudioContext, playFromUrl, stop],
   )
 
-  return { unlock, playFromUrl, playFromBase64, stop, isPlaying }
+  const getVolume = useCallback((): number => {
+    const analyser = analyserRef.current
+    const data = freqDataRef.current
+    if (!analyser || data.length === 0) return 0
+    analyser.getByteFrequencyData(data as Uint8Array<ArrayBuffer>)
+    let sum = 0
+    for (let i = 0; i < data.length; i++) sum += data[i]
+    return sum / (data.length * 255)
+  }, [])
+
+  return { unlock, playFromUrl, playFromBase64, stop, isPlaying, getVolume }
 }

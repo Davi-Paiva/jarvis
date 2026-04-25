@@ -24,6 +24,7 @@ type VoiceContextValue = {
   transcript: string
   socketConnected: boolean
   loopbackMode: boolean
+  getVolume: () => number
   startListening: () => void
   stopListening: () => void
   sendTranscript: (text: string) => boolean
@@ -51,6 +52,7 @@ export function VoiceProvider({ children, socket = appSocket }: VoiceProviderPro
     playFromBase64,
     stop: stopAudio,
     isPlaying: isAudioPlaying,
+    getVolume,
   } = useAudioPlayback()
 
   useEffect(() => {
@@ -182,6 +184,7 @@ export function VoiceProvider({ children, socket = appSocket }: VoiceProviderPro
       transcript,
       socketConnected,
       loopbackMode,
+      getVolume,
       startListening,
       stopListening: stopSTT,
       sendTranscript,
@@ -193,6 +196,7 @@ export function VoiceProvider({ children, socket = appSocket }: VoiceProviderPro
       transcript,
       socketConnected,
       loopbackMode,
+      getVolume,
       startListening,
       stopSTT,
       sendTranscript,

@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
 import { CallButton } from './CallButton';
+import { JarvisOrb } from './JarvisOrb';
+import type { OrbCallState } from './JarvisOrb';
 import { useConversationLoop } from './useConversationLoop';
 import type { Message, Agent/*, ApprovalRequest*/ } from '../../shared/types';
 
@@ -10,6 +12,7 @@ type Props = {
   transcript: string;
   messages: Message[];
   activeAgent: Agent;
+  getVolume: () => number;
   // approvals: ApprovalRequest[];
   onSendMessage: (text: string) => void;
 };
@@ -33,12 +36,13 @@ export function CallScreen({
   transcript,
   messages,
   activeAgent,
+  getVolume,
   // approvals,
 }: Props) {
   const { inCall, startCall, endCall } = useConversationLoop();
   const timer = useCallTimer(inCall);
 
-  type CallState = 'inactive' | 'listening' | 'thinking' | 'responding';
+  type CallState = OrbCallState;
   const callState: CallState = !inCall
     ? 'inactive'
     : listening
@@ -62,35 +66,43 @@ export function CallScreen({
 
   return (
     <div className="jv-screen jv-call-screen">
-      {/* Header */}
-      <header className="jv-call-header">
-        <span className={`jv-dot ${socketConnected ? 'jv-dot--ok' : 'jv-dot--err'}`} />
-        <span className="jv-call-agent">{activeAgent.name}</span>
-        {inCall && (
-          <span className="jv-call-timer" style={{ marginLeft: 'auto' }}>
-            <span className="jv-dot jv-dot--ok" style={{ display: 'inline-block', marginRight: 6 }} />
-            {timer}
-          </span>
-        )}
-      </header>
 
-      {/* Call body */}
-      <main className="jv-call-body">
-        <div className={`jv-orb jv-orb--${callState}`}>
-          <div className="jv-orb-inner" />
-        </div>
+      {/* ── Full-screen 3D canvas (background layer) ── */}
+      <JarvisOrb callState={callState} getVolume={getVolume} />
 
-        <p className="jv-call-state-label">{stateLabel[callState]}</p>
+      {/* ── HUD overlay (sits above canvas) ── */}
+      <div className="jv-call-hud">
 
-        {subtitle && (
-          <p className="jv-call-subtitle">{subtitle}</p>
-        )}
-      </main>
+        {/* Corner brackets */}
+        <div className="jv-hud-corner jv-hud-corner--tl" />
+        <div className="jv-hud-corner jv-hud-corner--tr" />
+        <div className="jv-hud-corner jv-hud-corner--bl" />
+        <div className="jv-hud-corner jv-hud-corner--br" />
 
-      {/* Footer */}
-      <footer className="jv-call-footer">
-        <CallButton inCall={inCall} onStart={startCall} onEnd={endCall} />
-      </footer>
+        {/* Header */}
+        <header className="jv-call-header">
+          <span className={`jv-dot ${socketConnected ? 'jv-dot--ok' : 'jv-dot--err'}`} />
+          <span className="jv-call-agent">{activeAgent.name}</span>
+          {inCall && (
+            <span className="jv-call-timer" style={{ marginLeft: 'auto' }}>
+              <span className="jv-dot jv-dot--ok" style={{ display: 'inline-block', marginRight: 6 }} />
+              {timer}
+            </span>
+          )}
+        </header>
+
+        {/* Centre labels — float over orb */}
+        <main className="jv-call-body">
+          <p className="jv-call-state-label">{stateLabel[callState]}</p>
+          {subtitle && <p className="jv-call-subtitle">{subtitle}</p>}
+        </main>
+
+        {/* Footer */}
+        <footer className="jv-call-footer">
+          <CallButton inCall={inCall} onStart={startCall} onEnd={endCall} />
+        </footer>
+
+      </div>
     </div>
   );
 }

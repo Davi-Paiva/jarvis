@@ -59,6 +59,7 @@ export function useJarvisSession() {
     listening: voice.listening,
     speaking: voice.speaking,
     transcript: voice.transcript,
+    getVolume: voice.getVolume,
     messages,
     activeAgent: ACTIVE_AGENT,
     approvals,
