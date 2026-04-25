@@ -1,6 +1,7 @@
 export type SessionStartMessage = {
   type: "SESSION_START";
   sessionId?: string;
+  enableAudio?: boolean;  // Set to false to disable audio synthesis and save ElevenLabs credits
 };
 
 export type UserTranscriptMessage = {

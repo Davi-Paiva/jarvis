@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 class SessionStartMessage(BaseModel):
     type: Literal["SESSION_START"]
     sessionId: Optional[str] = None
+    enableAudio: bool = True  # Desktop app should set this to False
 
 
 class UserTranscriptMessage(BaseModel):

@@ -1,6 +1,7 @@
 export type SessionStartMessage = {
   type: 'SESSION_START'
   sessionId?: string
+  enableAudio?: boolean  // Set to true to enable audio synthesis (default: true)
 }
 
 export type UserTranscriptMessage = {

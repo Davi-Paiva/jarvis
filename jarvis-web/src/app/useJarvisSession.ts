@@ -55,6 +55,7 @@ export function useJarvisSession() {
       const sent = voice.sendClientMessage({
         type: 'SESSION_START',
         sessionId: sessionId ?? undefined,
+        enableAudio: true,  // Web app uses audio playback
       });
       if (sent) {
         setConnectionState('connecting');
@@ -81,6 +82,7 @@ export function useJarvisSession() {
       voice.sendClientMessage({
         type: 'SESSION_START',
         sessionId: sessionId ?? undefined,
+        enableAudio: true,  // Web app uses audio playback
       });
     }
   }, [sessionId, voice]);

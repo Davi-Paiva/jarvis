@@ -90,6 +90,7 @@ function MainPage({ initialFolder, initialRepoAgentId, onAllFoldersDeleted }: Ma
         ws.sendClientMessage({
           type: "SESSION_START",
           sessionId: undefined,
+          enableAudio: false,  // Desktop app doesn't use audio - save ElevenLabs credits
         });
       },
       onDisconnect: () => {

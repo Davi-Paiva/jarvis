@@ -37,6 +37,7 @@ class PendingVoicePrompt:
 class VoiceSessionRuntime:
     session_id: str
     user_id: str = "demo"
+    enable_audio: bool = True  # Whether to synthesize audio for this session
     active_repo_agent_id: Optional[str] = None
     active_chat_id: Optional[str] = None
     chat_by_repo: Dict[str, str] = field(default_factory=dict)
@@ -61,8 +62,8 @@ class VoiceSessionService:
         self.command_router = command_router or VoiceCommandRouter()
         self.sessions: Dict[str, VoiceSessionRuntime] = {}
 
-    def start_session(self, session_id: Optional[str] = None) -> List[ServerToClientMessage]:
-        runtime = self._get_or_create_runtime(session_id=session_id)
+    def start_session(self, session_id: Optional[str] = None, enable_audio: bool = True) -> List[ServerToClientMessage]:
+        runtime = self._get_or_create_runtime(session_id=session_id, enable_audio=enable_audio)
         self._hydrate_runtime(runtime)
         messages: List[ServerToClientMessage] = [self._build_session_state(runtime)]
         if runtime.active_repo_agent_id is None:
@@ -221,12 +222,13 @@ class VoiceSessionService:
         )
         return resolved
 
-    def _get_or_create_runtime(self, session_id: Optional[str] = None) -> VoiceSessionRuntime:
+    def _get_or_create_runtime(self, session_id: Optional[str] = None, enable_audio: bool = True) -> VoiceSessionRuntime:
         actual_session_id = session_id or self._new_session_id()
         if actual_session_id not in self.sessions:
             self.sessions[actual_session_id] = VoiceSessionRuntime(
                 session_id=actual_session_id,
                 user_id=self.orchestrator.settings.jarvis_user_id,
+                enable_audio=enable_audio,
             )
         return self.sessions[actual_session_id]
 

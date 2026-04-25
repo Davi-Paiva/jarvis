@@ -232,6 +232,7 @@ async def synthesize_with_elevenlabs(text: str) -> Optional[str]:
 async def websocket_voice(websocket: WebSocket) -> None:
     await websocket.accept()
     session_id: Optional[str] = None
+    enable_audio: bool = True  # Default to True for backward compatibility
     orchestrator = websocket.app.state.orchestrator
     voice_service = websocket.app.state.voice_session_service
     listener_queue = orchestrator.manager.register_listener()
@@ -249,7 +250,7 @@ async def websocket_voice(websocket: WebSocket) -> None:
                 try:
                     async with message_lock:
                         messages = await voice_service.handle_manager_event(session_id, event)
-                        await _send_messages(websocket, messages)
+                        await _send_messages(websocket, messages, enable_audio)
                 except WebSocketDisconnect:
                     return
                 except Exception as exc:
@@ -271,7 +272,11 @@ async def websocket_voice(websocket: WebSocket) -> None:
                 if message_type == "SESSION_START":
                     start_message = SessionStartMessage.model_validate(payload)
                     session_id = start_message.sessionId
-                    messages = voice_service.start_session(session_id=session_id)
+                    enable_audio = start_message.enableAudio  # Store the client's audio preference
+                    messages = voice_service.start_session(
+                        session_id=session_id,
+                        enable_audio=enable_audio
+                    )
                     if session_id is None and messages and isinstance(messages[0], SessionStateMessage):
                         session_id = messages[0].sessionId
                 elif message_type == "USER_TRANSCRIPT":
@@ -294,7 +299,7 @@ async def websocket_voice(websocket: WebSocket) -> None:
                 else:
                     continue
                 try:
-                    await _send_messages(websocket, messages)
+                    await _send_messages(websocket, messages, enable_audio)
                 except WebSocketDisconnect:
                     raise
                 except Exception as exc:
@@ -331,18 +336,21 @@ async def websocket_voice(websocket: WebSocket) -> None:
 async def _send_messages(
     websocket: WebSocket,
     messages: List[ServerToClientMessage],
+    enable_audio: bool = True,
 ) -> None:
     for message in messages:
         if isinstance(message, AIResponseMessage):
             turn_id = message.turnId or uuid.uuid4().hex
             message.turnId = turn_id
 
-            streamed = await send_audio_stream(websocket, message.responseText, turn_id)
-            if streamed:
-                continue
+            # Only synthesize audio if the client requested it
+            if enable_audio:
+                streamed = await send_audio_stream(websocket, message.responseText, turn_id)
+                if streamed:
+                    continue
 
-            audio_base64 = await synthesize_with_elevenlabs(message.responseText)
-            if audio_base64:
-                message.audioBase64 = audio_base64
-                message.audioMimeType = "audio/mpeg"
+                audio_base64 = await synthesize_with_elevenlabs(message.responseText)
+                if audio_base64:
+                    message.audioBase64 = audio_base64
+                    message.audioMimeType = "audio/mpeg"
         await websocket.send_text(message.model_dump_json())
