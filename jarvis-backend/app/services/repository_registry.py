@@ -8,6 +8,7 @@ from uuid import uuid4
 from app.config import Settings
 from app.models.repository import RepositoryAgentState, RepositoryRecord
 from app.models.task import TaskAgentState
+from app.services.errors import InvalidRepositoryPathError, RepositoryPathNotAllowedError
 from app.services.memory_service import MemoryService
 from app.services.persistence import SQLitePersistence
 
@@ -30,9 +31,30 @@ class RepositoryRegistry:
         branch_name: Optional[str] = None,
         user_id: Optional[str] = None,
     ) -> RepositoryAgentState:
+        state, _created = self.get_or_create_repo_agent(
+            repo_path=repo_path,
+            display_name=display_name,
+            branch_name=branch_name,
+            user_id=user_id,
+        )
+        return state
+
+    def get_or_create_repo_agent(
+        self,
+        repo_path: str,
+        display_name: Optional[str] = None,
+        branch_name: Optional[str] = None,
+        user_id: Optional[str] = None,
+    ) -> Tuple[RepositoryAgentState, bool]:
         resolved_repo_path = self._resolve_allowed_repo_path(repo_path)
+        owner = user_id or self.settings.jarvis_user_id
+        existing_state = self.find_agent_by_repo_path(str(resolved_repo_path), owner)
+        if existing_state is not None:
+            self.memory_service.initialize_agent_memory(existing_state)
+            return existing_state, False
+
         record = RepositoryRecord(
-            user_id=user_id or self.settings.jarvis_user_id,
+            user_id=owner,
             repo_path=str(resolved_repo_path),
             display_name=display_name or resolved_repo_path.name,
         )
@@ -48,7 +70,19 @@ class RepositoryRegistry:
         self.persistence.save_repository(record)
         self.persistence.save_repo_agent(state)
         self.memory_service.initialize_agent_memory(state)
-        return state
+        return state, True
+
+    def find_agent_by_repo_path(
+        self,
+        repo_path: str,
+        user_id: Optional[str] = None,
+    ) -> Optional[RepositoryAgentState]:
+        resolved_repo_path = self._resolve_allowed_repo_path(repo_path)
+        owner = user_id or self.settings.jarvis_user_id
+        for state in self.persistence.list_repo_agents(user_id=owner):
+            if Path(state.repo_path).expanduser().resolve() == resolved_repo_path:
+                return state
+        return None
 
     def get_agent_state(self, repo_agent_id: str) -> RepositoryAgentState:
         state = self.persistence.get_repo_agent(repo_agent_id)
@@ -75,13 +109,17 @@ class RepositoryRegistry:
     def _resolve_allowed_repo_path(self, repo_path: str) -> Path:
         path = Path(repo_path).expanduser().resolve()
         if not path.exists() or not path.is_dir():
-            raise ValueError("Repository path does not exist or is not a directory: %s" % repo_path)
+            raise InvalidRepositoryPathError(
+                "Repository path does not exist or is not a directory: %s" % repo_path
+            )
 
         allowed_roots = self._allowed_roots()
         if not allowed_roots:
             return path
         if not any(_is_relative_to(path, root) for root in allowed_roots):
-            raise ValueError("Repository path is outside allowed roots: %s" % path)
+            raise RepositoryPathNotAllowedError(
+                "Repository path is outside allowed roots: %s" % path
+            )
         return path
 
     def _allowed_roots(self) -> List[Path]:

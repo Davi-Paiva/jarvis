@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from typing import Optional
 
+from fastapi import FastAPI
+
+from app.api import router as api_router
 from app.config import Settings, load_settings
 from app.services.openai_client import LLMClient
 from app.services.orchestrator import JarvisOrchestrator
@@ -19,5 +22,17 @@ def create_orchestrator(
     return JarvisOrchestrator.create(settings=settings or load_settings(), llm_client=llm_client)
 
 
-__all__ = ["create_orchestrator"]
+def create_app(
+    settings: Optional[Settings] = None,
+    llm_client: Optional[LLMClient] = None,
+) -> FastAPI:
+    app = FastAPI(title="Jarvis Backend", version="0.1.0")
+    app.state.orchestrator = create_orchestrator(settings=settings, llm_client=llm_client)
+    app.include_router(api_router)
+    return app
 
+
+app = create_app()
+
+
+__all__ = ["app", "create_app", "create_orchestrator"]

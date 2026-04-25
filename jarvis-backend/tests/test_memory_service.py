@@ -126,6 +126,24 @@ def test_memory_service_compacts_and_archives_old_completed_tasks(tmp_path):
     assert "Task 0" in archives[0].read_text(encoding="utf-8")
 
 
+def test_memory_service_repairs_missing_or_legacy_memory_on_initialize(tmp_path):
+    service = MemoryService(str(tmp_path / "memory"))
+    state = _repo_state(str(tmp_path / "repo"))
+    path = service.path_for_agent(state.repo_agent_id)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("# Legacy memory\nold format\n", encoding="utf-8")
+
+    service.initialize_agent_memory(state)
+
+    content = path.read_text(encoding="utf-8")
+    archives = list((tmp_path / "memory" / "archive").glob("*legacy*.md"))
+
+    assert content.startswith("---\n")
+    assert "# Repository Memory" in content
+    assert archives
+
+
 def _repo_state(repo_path: str) -> RepositoryAgentState:
     return RepositoryAgentState(
         repo_agent_id="repo_agent_test",

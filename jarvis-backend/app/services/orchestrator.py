@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Tuple
 
 from app.agents.repository_agent import RepositoryAgent
 from app.config import Settings
 from app.models.repository import RepositoryAgentState
-from app.models.schemas import AgentStateOutput
+from app.models.schemas import AgentStateOutput, CreateRepoAgentOutput
 from app.models.turns import TurnRequest
 from app.services.global_manager import GlobalManager
 from app.services.graph_checkpointer import create_langgraph_sqlite_checkpointer
@@ -76,11 +76,36 @@ class JarvisOrchestrator:
         display_name: Optional[str] = None,
         branch_name: Optional[str] = None,
     ) -> RepositoryAgentState:
-        return self.registry.create_repo_agent(
+        state, _created = self.registry.get_or_create_repo_agent(
             repo_path=repo_path,
             display_name=display_name,
             branch_name=branch_name,
             user_id=self.settings.jarvis_user_id,
+        )
+        return state
+
+    async def activate_repo_agent(
+        self,
+        repo_path: str,
+        display_name: Optional[str] = None,
+        branch_name: Optional[str] = None,
+    ) -> Tuple[RepositoryAgentState, bool]:
+        return self.registry.get_or_create_repo_agent(
+            repo_path=repo_path,
+            display_name=display_name,
+            branch_name=branch_name,
+            user_id=self.settings.jarvis_user_id,
+        )
+
+    def to_create_repo_agent_output(
+        self,
+        state: RepositoryAgentState,
+    ) -> CreateRepoAgentOutput:
+        return CreateRepoAgentOutput(
+            repo_agent_id=state.repo_agent_id,
+            repo_id=state.repo_id,
+            thread_id=state.thread_id,
+            phase=state.phase.value,
         )
 
     async def start_task(

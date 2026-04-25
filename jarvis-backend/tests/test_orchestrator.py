@@ -74,6 +74,25 @@ def test_orchestrator_rejection_keeps_intake_lock(tmp_path):
     asyncio.run(scenario())
 
 
+def test_orchestrator_activate_repo_agent_is_idempotent(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "main.py").write_text("print('hello')\n", encoding="utf-8")
+    orchestrator = _orchestrator(tmp_path)
+
+    async def scenario():
+        first_state, created_first = await orchestrator.activate_repo_agent(str(repo))
+        second_state, created_second = await orchestrator.activate_repo_agent(str(repo))
+
+        assert created_first is True
+        assert created_second is False
+        assert first_state.repo_agent_id == second_state.repo_agent_id
+        assert first_state.repo_id == second_state.repo_id
+        assert (tmp_path / "memory" / ("%s.md" % first_state.repo_agent_id)).exists()
+
+    asyncio.run(scenario())
+
+
 def _orchestrator(tmp_path):
     settings = Settings(
         jarvis_data_dir=str(tmp_path / "data"),
@@ -82,4 +101,3 @@ def _orchestrator(tmp_path):
         jarvis_allowed_repo_roots=[str(tmp_path)],
     )
     return JarvisOrchestrator.create(settings=settings, llm_client=FakeLLMClient())
-

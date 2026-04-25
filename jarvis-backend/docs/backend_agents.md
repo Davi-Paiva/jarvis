@@ -1,13 +1,14 @@
 # Jarvis Backend Agents
 
-This backend implements the local orchestration core for Jarvis without REST or
-WebSocket endpoints. Future API adapters should call `JarvisOrchestrator`
-instead of duplicating domain logic.
+This backend implements the local orchestration core for Jarvis. The first HTTP
+route is `POST /folder`, and future API adapters should keep calling
+`JarvisOrchestrator` instead of duplicating domain logic.
 
 ## Main Flow
 
 1. Create an orchestrator with `app.main.create_orchestrator()`.
-2. Call `create_repo_agent(repo_path=...)` to register a local repository.
+2. Or start the HTTP app from `app.main:app` and call `POST /folder` to
+   activate a local repository.
 3. Call `start_task(repo_agent_id, message, acceptance_criteria)` to begin
    intake and planning.
 4. Read the next visible turn with `get_next_turn()`.
@@ -17,6 +18,7 @@ instead of duplicating domain logic.
 
 ## Important Modules
 
+- `app/api/routes.py`: thin FastAPI transport with `POST /folder`.
 - `app/services/orchestrator.py`: public facade for future endpoints.
 - `app/services/global_manager.py`: deterministic turn/event coordinator.
 - `app/services/turn_scheduler.py`: priority queue and intake lock rules.
@@ -91,6 +93,49 @@ objects through `GlobalManager.enqueue_turn(...)`.
 User responses enter through `JarvisOrchestrator.submit_user_response(...)`,
 which records the response in `GlobalManager` and resumes the correct
 repository agent.
+
+## HTTP Activation
+
+Run the backend with:
+
+```bash
+uvicorn app.main:app --reload
+```
+
+The first endpoint is:
+
+```http
+POST /folder
+Content-Type: application/json
+```
+
+Request body:
+
+```json
+{
+  "repo_path": "/absolute/path/to/repo",
+  "display_name": "Optional Repo Name",
+  "branch_name": "optional-branch"
+}
+```
+
+Response body:
+
+```json
+{
+  "repo_agent_id": "repo_agent_123",
+  "repo_id": "repo_abc",
+  "thread_id": "repo_agent:repo_agent_123",
+  "phase": "INTAKE"
+}
+```
+
+Status codes:
+
+- `201` if the repository agent is created for the first time.
+- `200` if the same folder was already activated and the existing agent is reused.
+- `400` if the path does not exist or is not a directory.
+- `403` if the path is outside `JARVIS_ALLOWED_REPO_ROOTS`.
 
 ## LocalExecutor Safety
 

@@ -1,5 +1,5 @@
-"""Future transport adapters live here.
+"""HTTP transport adapters for the backend."""
 
-No REST or WebSocket routes are registered in this implementation pass.
-"""
+from app.api.routes import router
 
+__all__ = ["router"]
