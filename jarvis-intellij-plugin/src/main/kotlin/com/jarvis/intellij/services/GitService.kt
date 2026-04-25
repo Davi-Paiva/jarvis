@@ -2,6 +2,8 @@ package com.jarvis.intellij.services
 
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
+import com.jarvis.intellij.model.DiagramNodeStatus
+import com.jarvis.intellij.model.GitDiagramSnapshot
 import java.io.File
 import java.io.IOException
 import kotlin.math.max
@@ -9,6 +11,57 @@ import java.util.concurrent.TimeUnit
 
 class GitService {
     private val logger = Logger.getInstance(GitService::class.java)
+
+    fun getDiagramGitSnapshot(project: Project): GitDiagramSnapshot {
+        val projectRoot = project.basePath ?: throw GitServiceException("Project root is unavailable.")
+        val trackedOutput = readTrackedNameStatus(projectRoot)
+        val untrackedFiles = readUntrackedFiles(projectRoot)
+
+        val statuses = linkedMapOf<String, DiagramNodeStatus>()
+        trackedOutput.lineSequence()
+            .map(String::trim)
+            .filter(String::isNotEmpty)
+            .forEach { line ->
+                val parts = line.split('\t').filter { it.isNotBlank() }
+                if (parts.size < 2) {
+                    return@forEach
+                }
+
+                val statusCode = parts.first().trim()
+                val rawPath = parts.last().trim()
+                val normalizedPath = normalizePath(rawPath)
+                when {
+                    statusCode.startsWith("A", ignoreCase = true) -> {
+                        statuses[normalizedPath] = DiagramNodeStatus.ADDED
+                    }
+
+                    statusCode.startsWith("M", ignoreCase = true) ||
+                        statusCode.startsWith("R", ignoreCase = true) ||
+                        statusCode.startsWith("C", ignoreCase = true) -> {
+                        statuses[normalizedPath] = DiagramNodeStatus.MODIFIED
+                    }
+                }
+            }
+
+        untrackedFiles.forEach { path ->
+            statuses[path] = DiagramNodeStatus.ADDED
+        }
+
+        val signature = buildString {
+            trackedOutput.lineSequence()
+                .map(String::trim)
+                .filter(String::isNotEmpty)
+                .sorted()
+                .forEach { appendLine(it) }
+            appendLine("--untracked--")
+            untrackedFiles.sorted().forEach { appendLine(it) }
+        }.trim()
+
+        logger.info(
+            "Collected git snapshot for ${project.name}: ${statuses.size} changed file(s)",
+        )
+        return GitDiagramSnapshot(signature = signature, statuses = statuses)
+    }
 
     fun listChangedFiles(project: Project): List<String> {
         val projectRoot = project.basePath ?: throw GitServiceException("Project root is unavailable.")
@@ -153,6 +206,42 @@ class GitService {
             .map(String::trim)
             .filter(String::isNotEmpty)
             .toList()
+
+    private fun readTrackedNameStatus(projectRoot: String): String {
+        val trackedChanges = runGitCommand(projectRoot, "git", "diff", "--name-status", "HEAD")
+        return when {
+            trackedChanges.exitCode == 0 -> trackedChanges.output
+            trackedChanges.output.contains("not a git repository", ignoreCase = true) -> {
+                throw GitServiceException("No git repository found")
+            }
+
+            trackedChanges.output.contains("bad revision 'HEAD'", ignoreCase = true) -> ""
+            trackedChanges.output.contains("ambiguous argument 'HEAD'", ignoreCase = true) -> ""
+            else -> {
+                logger.warn(
+                    "git diff --name-status failed for $projectRoot with exit code ${trackedChanges.exitCode}: ${trackedChanges.output}",
+                )
+                throw GitServiceException("Unable to read git changes.")
+            }
+        }
+    }
+
+    private fun readUntrackedFiles(projectRoot: String): List<String> {
+        val untrackedChanges = runGitCommand(projectRoot, "git", "ls-files", "--others", "--exclude-standard")
+        return when {
+            untrackedChanges.exitCode == 0 -> parsePaths(untrackedChanges.output).map(::normalizePath)
+            untrackedChanges.output.contains("not a git repository", ignoreCase = true) -> {
+                throw GitServiceException("No git repository found")
+            }
+
+            else -> {
+                logger.warn(
+                    "git ls-files failed for $projectRoot with exit code ${untrackedChanges.exitCode}: ${untrackedChanges.output}",
+                )
+                throw GitServiceException("Unable to read git changes.")
+            }
+        }
+    }
 
     private fun isUntrackedFile(projectRoot: String, relativePath: String): Boolean {
         val untrackedCheck = runGitCommand(

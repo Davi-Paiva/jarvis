@@ -1,37 +1,49 @@
 package com.jarvis.intellij.ui
 
+import com.intellij.openapi.Disposable
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.editor.ScrollType
+import com.intellij.ui.jcef.JBCefApp
+import com.intellij.ui.jcef.JBCefBrowser
 import com.intellij.ui.components.JBList
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.JBTextArea
 import com.jarvis.intellij.model.AnalyzeResponse
 import com.jarvis.intellij.services.ProjectAnalysisCoordinator
+import java.awt.CardLayout
 import java.awt.BorderLayout
 import java.awt.Dimension
 import javax.swing.Box
 import javax.swing.BoxLayout
 import javax.swing.DefaultListModel
 import javax.swing.JButton
+import javax.swing.JEditorPane
 import javax.swing.JLabel
 import javax.swing.JPanel
 import javax.swing.JSplitPane
 import javax.swing.ListSelectionModel
 
-class JarvisToolWindowPanel(private val project: Project) : JPanel(BorderLayout()) {
+class JarvisToolWindowPanel(private val project: Project) : JPanel(BorderLayout()), Disposable {
     private val logger = Logger.getInstance(JarvisToolWindowPanel::class.java)
     private val analysisCoordinator = ProjectAnalysisCoordinator(project)
 
     private val analyzeChangesButton = JButton("Analyze Changes")
+    private val viewDiagramButton = JButton("View Diagram")
     private val nextStepButton = JButton("Next Step")
     private val statusLabel = JLabel("Click Analyze Changes to load changed files.")
     private val fileListModel = DefaultListModel<ProjectFileItem>()
     private val fileList = JBList(fileListModel)
     private val resultsArea = JBTextArea()
+    private val analysisScrollPane = JBScrollPane(resultsArea)
+    private val contentLayout = CardLayout()
+    private val contentPanel = JPanel(contentLayout)
+    private val diagramBrowser = if (JBCefApp.isSupported()) JBCefBrowser() else null
+    private val diagramFallback = JEditorPane("text/html", "")
+    private val diagramPanel = JPanel(BorderLayout())
 
     private var currentAnalysis: AnalyzeResponse? = null
     private var currentFileItem: ProjectFileItem? = null
@@ -49,6 +61,8 @@ class JarvisToolWindowPanel(private val project: Project) : JPanel(BorderLayout(
             layout = BoxLayout(this, BoxLayout.X_AXIS)
             add(analyzeChangesButton)
             add(Box.createHorizontalStrut(8))
+            add(viewDiagramButton)
+            add(Box.createHorizontalStrut(8))
             add(nextStepButton)
         }
 
@@ -64,12 +78,27 @@ class JarvisToolWindowPanel(private val project: Project) : JPanel(BorderLayout(
         resultsArea.wrapStyleWord = true
         resultsArea.text = "Jarvis results will appear here."
 
+        diagramFallback.isEditable = false
+        diagramFallback.text = diagramMessageHtml(
+            title = "Architecture Diagram",
+            message = "Click View Diagram to generate a visual map of the project.",
+        )
+
+        if (diagramBrowser != null) {
+            diagramPanel.add(diagramBrowser.component, BorderLayout.CENTER)
+        } else {
+            diagramPanel.add(JBScrollPane(diagramFallback), BorderLayout.CENTER)
+        }
+
+        contentPanel.add(analysisScrollPane, ANALYSIS_CARD)
+        contentPanel.add(diagramPanel, DIAGRAM_CARD)
+
         nextStepButton.isEnabled = false
 
         val splitPane = JSplitPane(
             JSplitPane.HORIZONTAL_SPLIT,
             JBScrollPane(fileList),
-            JBScrollPane(resultsArea),
+            contentPanel,
         ).apply {
             resizeWeight = 0.35
             preferredSize = Dimension(800, 500)
@@ -82,6 +111,10 @@ class JarvisToolWindowPanel(private val project: Project) : JPanel(BorderLayout(
     private fun registerListeners() {
         analyzeChangesButton.addActionListener {
             loadChangedFiles()
+        }
+
+        viewDiagramButton.addActionListener {
+            loadArchitectureDiagram()
         }
 
         nextStepButton.addActionListener {
@@ -98,6 +131,7 @@ class JarvisToolWindowPanel(private val project: Project) : JPanel(BorderLayout(
 
     private fun loadChangedFiles() {
         logger.info("Analyze Changes clicked for ${project.name}")
+        showAnalysisView()
         analyzeChangesButton.isEnabled = false
         nextStepButton.isEnabled = false
         fileListModel.clear()
@@ -132,8 +166,45 @@ class JarvisToolWindowPanel(private val project: Project) : JPanel(BorderLayout(
         )
     }
 
+    private fun loadArchitectureDiagram() {
+        logger.info("View Diagram clicked for ${project.name}")
+        viewDiagramButton.isEnabled = false
+        nextStepButton.isEnabled = false
+        statusLabel.text = "Building architecture diagram..."
+        showDiagramView()
+        renderDiagramHtml(
+            diagramMessageHtml(
+                title = "Building Diagram",
+                message = "Computing project graph, comparing git state, and preparing the cached view.",
+            ),
+        )
+
+        analysisCoordinator.loadArchitectureDiagram(
+            onSuccess = { result ->
+                viewDiagramButton.isEnabled = true
+                renderDiagramHtml(result.html)
+                statusLabel.text = if (result.fromCache) {
+                    "Loaded cached diagram (${result.nodeCount} files, ${result.edgeCount} relationships)."
+                } else {
+                    "Updated diagram cache (${result.nodeCount} files, ${result.edgeCount} relationships)."
+                }
+            },
+            onError = { message ->
+                viewDiagramButton.isEnabled = true
+                statusLabel.text = message
+                renderDiagramHtml(
+                    diagramMessageHtml(
+                        title = "Diagram Unavailable",
+                        message = message,
+                    ),
+                )
+            },
+        )
+    }
+
     private fun analyzeSelectedFile(item: ProjectFileItem) {
         logger.info("Analyzing file ${item.displayPath}")
+        showAnalysisView()
         currentFileItem = item
         nextStepButton.isEnabled = false
         currentAnalysis = null
@@ -167,6 +238,7 @@ class JarvisToolWindowPanel(private val project: Project) : JPanel(BorderLayout(
         val currentLine = currentChangedLines.getOrNull(currentChangedLineIndex)
         val currentLineSummary = currentLine?.let { currentLineSummaries[it] }
 
+        showAnalysisView()
         resultsArea.text = buildString {
             append(analysis.summary.ifBlank { "No summary returned." })
 
@@ -199,6 +271,49 @@ class JarvisToolWindowPanel(private val project: Project) : JPanel(BorderLayout(
 
         nextStepButton.isEnabled = true
         nextStepButton.text = "Next Step"
+    }
+
+    private fun showAnalysisView() {
+        contentLayout.show(contentPanel, ANALYSIS_CARD)
+    }
+
+    private fun showDiagramView() {
+        contentLayout.show(contentPanel, DIAGRAM_CARD)
+    }
+
+    private fun renderDiagramHtml(html: String) {
+        if (diagramBrowser != null) {
+            diagramBrowser.loadHTML(html)
+        } else {
+            diagramFallback.text = diagramMessageHtml(
+                title = "JCEF Required",
+                message = "This IDE does not support the embedded browser needed for the interactive diagram view.",
+            )
+        }
+    }
+
+    private fun diagramMessageHtml(title: String, message: String): String =
+        """
+            <html>
+            <body style="margin:0;padding:24px;font-family:Segoe UI, sans-serif;background:#f8fbff;color:#0f172a;">
+                <div style="max-width:560px;padding:24px;border-radius:20px;background:white;border:1px solid rgba(148,163,184,0.25);box-shadow:0 20px 50px rgba(15,23,42,0.08);">
+                    <h2 style="margin:0 0 12px;font-size:24px;">${escapeHtml(title)}</h2>
+                    <p style="margin:0;font-size:14px;line-height:1.6;color:#475569;">${escapeHtml(message)}</p>
+                </div>
+            </body>
+            </html>
+        """.trimIndent()
+
+    private fun escapeHtml(value: String): String = buildString(value.length) {
+        value.forEach { character ->
+            when (character) {
+                '&' -> append("&amp;")
+                '<' -> append("&lt;")
+                '>' -> append("&gt;")
+                '"' -> append("&quot;")
+                else -> append(character)
+            }
+        }
     }
 
     private fun focusCurrentChangedLine() {
@@ -252,6 +367,15 @@ class JarvisToolWindowPanel(private val project: Project) : JPanel(BorderLayout(
         } else {
             file.name
         }
+    }
+
+    override fun dispose() {
+        diagramBrowser?.dispose()
+    }
+
+    companion object {
+        private const val ANALYSIS_CARD = "analysis"
+        private const val DIAGRAM_CARD = "diagram"
     }
 }
 
