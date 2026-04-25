@@ -6,6 +6,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import router as api_router
+
+from app.api.health import router as health_router
+from app.api.voice_ws import router as voice_ws_router
 from app.config import Settings, load_settings
 from app.services.openai_client import LLMClient
 from app.services.orchestrator import JarvisOrchestrator

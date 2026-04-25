@@ -10,6 +10,8 @@ Thumbs.db
 .env
 .env.*
 !.env.example
+./jarvis-backend/.env
+./jarvis-backend/.env.*
 
 # Python
 __pycache__/

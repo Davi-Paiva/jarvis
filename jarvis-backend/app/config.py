@@ -7,20 +7,40 @@ from typing import List, Optional
 from pydantic import BaseModel, Field
 
 
+def _dotenv_candidates(env_file: str = ".env") -> List[Path]:
+    project_root_env = Path(__file__).resolve().parents[1] / env_file
+    cwd_env = Path(env_file)
+    candidates = [cwd_env, project_root_env]
+
+    # Keep order while removing duplicates.
+    deduped: List[Path] = []
+    seen: set[str] = set()
+    for item in candidates:
+        key = str(item.resolve()) if item.exists() else str(item)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped
+
+
 def _load_dotenv(env_file: str = ".env") -> None:
     """Tiny dotenv loader so the core can run without a framework dependency."""
-    path = Path(env_file)
-    if not path.exists():
-        return
-
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
+    for path in _dotenv_candidates(env_file):
+        if not path.exists():
             continue
-        key, value = line.split("=", 1)
-        key = key.strip()
-        value = value.strip().strip('"').strip("'")
-        os.environ.setdefault(key, value)
+
+        for raw_line in path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+
+            # Keep explicit environment overrides, but treat empty values as unset.
+            if key not in os.environ or os.environ.get(key, "") == "":
+                os.environ[key] = value
 
 
 def _split_csv(value: Optional[str], default: List[str]) -> List[str]:
