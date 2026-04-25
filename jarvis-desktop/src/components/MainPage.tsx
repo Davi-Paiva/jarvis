@@ -394,7 +394,11 @@ function handleServerMessage(
     setSessionId(state.sessionId);
     setActiveRepoAgentId(state.activeRepoAgentId ?? null);
     setPendingTurns(state.pendingTurns);
-    setFolders((prev) => mergeSessionFolders(prev, state.repos));
+    setFolders((prev) => {
+      const merged = mergeSessionFolders(prev, state.repos);
+      localStorage.setItem("jarvis-folders", JSON.stringify(merged));
+      return merged;
+    });
     if (state.activeRepoAgentId) {
       setMessagesByRepo((prev) => ({
         ...prev,
