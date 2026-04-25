@@ -1,11 +1,13 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
+import { ChatWebSocket } from "../services/websocket";
 import "./MainPage.css";
 
 interface Folder {
   id: string;
   name: string;
   path: string;
+  repoId?: string; // Backend repo ID
 }
 
 interface Message {
@@ -17,14 +19,16 @@ interface Message {
 
 interface MainPageProps {
   initialFolder: string;
+  repoId?: string; // Backend repo ID from folder activation
 }
 
-function MainPage({ initialFolder }: MainPageProps) {
+function MainPage({ initialFolder, repoId }: MainPageProps) {
   const [folders, setFolders] = useState<Folder[]>([
     {
       id: "1",
       name: initialFolder.split("/").pop() || "Project",
       path: initialFolder,
+      repoId: repoId,
     },
   ]);
   const [selectedFolderId, setSelectedFolderId] = useState<string>("1");
@@ -38,6 +42,85 @@ function MainPage({ initialFolder }: MainPageProps) {
   ]);
   const [inputMessage, setInputMessage] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [isConnected, setIsConnected] = useState(false);
+  const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
+  
+  const wsRef = useRef<ChatWebSocket | null>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // Auto-scroll to bottom when new messages arrive
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  };
+
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages]);
+
+  // Connect to WebSocket when component mounts with a repoId
+  useEffect(() => {
+    if (!repoId) {
+      console.log('[MainPage] No repoId provided, skipping WebSocket connection');
+      return;
+    }
+
+    console.log('[MainPage] Connecting to WebSocket with repoId:', repoId);
+    
+    const clientId = `client-${Date.now()}`;
+    
+    const ws = new ChatWebSocket({
+      repoId: repoId,
+      clientId,
+      onConnect: () => {
+        console.log('[MainPage] ✓ WebSocket connected');
+        setIsConnected(true);
+      },
+      onDisconnect: () => {
+        console.log('[MainPage] ✗ WebSocket disconnected');
+        setIsConnected(false);
+      },
+      onToken: (token: string) => {
+        setMessages((prev) => {
+          const lastMessage = prev[prev.length - 1];
+          if (lastMessage && lastMessage.id === streamingMessageId) {
+            return [
+              ...prev.slice(0, -1),
+              { ...lastMessage, content: lastMessage.content + token },
+            ];
+          }
+          return prev;
+        });
+      },
+      onComplete: (fullMessage: string) => {
+        console.log('[MainPage] Message complete:', fullMessage);
+        setIsLoading(false);
+        setStreamingMessageId(null);
+      },
+      onError: (error: string) => {
+        console.error('[MainPage] WebSocket error:', error);
+        setIsLoading(false);
+        setStreamingMessageId(null);
+        
+        const errorMessage: Message = {
+          id: `error-${Date.now()}`,
+          role: "assistant",
+          content: `Error: ${error}`,
+          timestamp: new Date(),
+        };
+        setMessages((prev) => [...prev, errorMessage]);
+      },
+    });
+
+    ws.connect();
+    wsRef.current = ws;
+
+    // Cleanup on unmount
+    return () => {
+      console.log('[MainPage] Cleaning up WebSocket connection');
+      ws.disconnect();
+      wsRef.current = null;
+    };
+  }, [repoId]); // Only reconnect if repoId changes
 
   const handleAddFolder = async () => {
     try {
@@ -62,8 +145,29 @@ function MainPage({ initialFolder }: MainPageProps) {
   };
 
   const handleSendMessage = () => {
-    if (!inputMessage.trim()) return;
+    console.log('[MainPage] handleSendMessage called, inputMessage:', inputMessage);
+    
+    if (!inputMessage.trim()) {
+      console.log('[MainPage] Empty message, ignoring');
+      return;
+    }
 
+    // Check if WebSocket is connected
+    console.log('[MainPage] Checking WebSocket - wsRef:', !!wsRef.current, 'isConnected:', isConnected);
+    
+    if (!wsRef.current || !isConnected) {
+      console.error('[MainPage] WebSocket not connected!');
+      const errorMessage: Message = {
+        id: `error-${Date.now()}`,
+        role: "assistant",
+        content: "Not connected to server. Please wait for connection or restart the backend.",
+        timestamp: new Date(),
+      };
+      setMessages((prev) => [...prev, errorMessage]);
+      return;
+    }
+
+    console.log('[MainPage] Creating user message');
     const newMessage: Message = {
       id: Date.now().toString(),
       role: "user",
@@ -71,22 +175,26 @@ function MainPage({ initialFolder }: MainPageProps) {
       timestamp: new Date(),
     };
 
-    setMessages([...messages, newMessage]);
+    setMessages((prev) => [...prev, newMessage]);
     setInputMessage("");
     setIsLoading(true);
 
-    // TODO: Integrate with your AI backend
-    // Simulating AI response
-    setTimeout(() => {
-      const aiResponse: Message = {
-        id: (Date.now() + 1).toString(),
-        role: "assistant",
-        content: "I'm processing your request. This is a placeholder response.",
-        timestamp: new Date(),
-      };
-      setMessages((prev) => [...prev, aiResponse]);
-      setIsLoading(false);
-    }, 1000);
+    // Create placeholder for assistant's streaming response
+    const assistantMessageId = `assistant-${Date.now()}`;
+    const assistantMessage: Message = {
+      id: assistantMessageId,
+      role: "assistant",
+      content: "",
+      timestamp: new Date(),
+    };
+    
+    setMessages((prev) => [...prev, assistantMessage]);
+    setStreamingMessageId(assistantMessageId);
+
+    // Send message via WebSocket
+    console.log('[MainPage] Calling wsRef.current.sendMessage()');
+    wsRef.current.sendMessage(inputMessage);
+    console.log('[MainPage] sendMessage call completed');
   };
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
@@ -152,6 +260,12 @@ function MainPage({ initialFolder }: MainPageProps) {
             <h3 className="chat-title">{selectedFolder?.name}</h3>
             <p className="chat-subtitle">{selectedFolder?.path}</p>
           </div>
+          {repoId && (
+            <div className={`connection-status ${isConnected ? 'connected' : 'disconnected'}`}>
+              <span className="status-dot"></span>
+              {isConnected ? 'Connected' : 'Disconnected'}
+            </div>
+          )}
         </div>
 
         <div className="messages-container">
@@ -193,6 +307,7 @@ function MainPage({ initialFolder }: MainPageProps) {
               </div>
             </div>
           )}
+          <div ref={messagesEndRef} />
         </div>
 
         <div className="input-container">

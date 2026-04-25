@@ -1,11 +1,27 @@
 from __future__ import annotations
 
+from enum import Enum
 from typing import List, Optional
 
 from pydantic import BaseModel, Field
 
 from app.models.repository import RepositoryAgentState
 from app.models.turns import TurnRequest
+
+
+class ChatMessageRole(str, Enum):
+    """Role of the message sender."""
+    USER = "user"
+    ASSISTANT = "assistant"
+    SYSTEM = "system"
+
+
+class ChatMessage(BaseModel):
+    """Represents a chat message."""
+    role: ChatMessageRole
+    content: str
+    timestamp: Optional[str] = None
+    message_id: Optional[str] = None
 
 
 class CreateRepoAgentInput(BaseModel):

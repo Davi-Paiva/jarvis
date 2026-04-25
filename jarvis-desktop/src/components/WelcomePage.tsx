@@ -5,7 +5,7 @@ import { ApiError } from "../types/api";
 import "./WelcomePage.css";
 
 interface WelcomePageProps {
-  onGetStarted: (folderPath: string) => void;
+  onGetStarted: (folderPath: string, repoId: string) => void;
 }
 
 function WelcomePage({ onGetStarted }: WelcomePageProps) {
@@ -45,10 +45,10 @@ function WelcomePage({ onGetStarted }: WelcomePageProps) {
       const folderName = selectedFolder.split("/").pop() || "Project";
 
       // Call backend API to activate the folder
-      await apiService.activateFolder(selectedFolder, folderName);
+      const result = await apiService.activateFolder(selectedFolder, folderName);
 
-      // Navigate to main page on success
-      onGetStarted(selectedFolder);
+      // Navigate to main page on success with repoId
+      onGetStarted(selectedFolder, result.repo_id);
     } catch (err) {
       const apiError = err as ApiError;
       console.error("Error activating folder:", apiError);

@@ -6,10 +6,12 @@ import MainPage from "./components/MainPage";
 
 function App() {
   const [selectedFolder, setSelectedFolder] = useState<string | null>(null);
+  const [repoId, setRepoId] = useState<string | null>(null);
   const [currentPage, setCurrentPage] = useState<"welcome" | "main">("welcome");
 
-  const handleGetStarted = (folderPath: string) => {
+  const handleGetStarted = (folderPath: string, repoId: string) => {
     setSelectedFolder(folderPath);
+    setRepoId(repoId);
     setCurrentPage("main");
   };
 
@@ -25,7 +27,7 @@ function App() {
       {currentPage === "welcome" ? (
         <WelcomePage onGetStarted={handleGetStarted} />
       ) : (
-        <MainPage initialFolder={selectedFolder!} />
+        <MainPage initialFolder={selectedFolder!} repoId={repoId || undefined} />
       )}
     </div>
   );

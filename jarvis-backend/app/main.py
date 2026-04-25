@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Optional
 
 from fastapi import FastAPI
@@ -9,9 +10,17 @@ from app.api import router as api_router
 
 from app.api.health import router as health_router
 from app.api.voice_ws import router as voice_ws_router
+from app.api.websocket import router as websocket_router
 from app.config import Settings, load_settings
 from app.services.openai_client import LLMClient
 from app.services.orchestrator import JarvisOrchestrator
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 
 def create_orchestrator(
@@ -50,6 +59,7 @@ def create_app(
     app.include_router(api_router)
     app.include_router(health_router)
     app.include_router(voice_ws_router)
+    app.include_router(websocket_router)
     return app
 
 
