@@ -8,7 +8,7 @@ from uuid import uuid4
 from app.config import Settings
 from app.models.repository import RepositoryAgentState, RepositoryRecord
 from app.models.task import TaskAgentState
-from app.services.memory_store import MarkdownMemoryStore
+from app.services.memory_service import MemoryService
 from app.services.persistence import SQLitePersistence
 
 
@@ -17,11 +17,11 @@ class RepositoryRegistry:
         self,
         settings: Settings,
         persistence: SQLitePersistence,
-        memory_store: MarkdownMemoryStore,
+        memory_service: MemoryService,
     ) -> None:
         self.settings = settings
         self.persistence = persistence
-        self.memory_store = memory_store
+        self.memory_service = memory_service
 
     def create_repo_agent(
         self,
@@ -47,7 +47,7 @@ class RepositoryRegistry:
         )
         self.persistence.save_repository(record)
         self.persistence.save_repo_agent(state)
-        self.memory_store.initialize_agent(state)
+        self.memory_service.initialize_agent_memory(state)
         return state
 
     def get_agent_state(self, repo_agent_id: str) -> RepositoryAgentState:
@@ -99,4 +99,3 @@ def _is_relative_to(path: Path, root: Path) -> bool:
     except ValueError:
         return False
     return common == str(root)
-

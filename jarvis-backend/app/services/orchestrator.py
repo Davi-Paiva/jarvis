@@ -10,7 +10,8 @@ from app.models.turns import TurnRequest
 from app.services.global_manager import GlobalManager
 from app.services.graph_checkpointer import create_langgraph_sqlite_checkpointer
 from app.services.local_executor import LocalExecutor
-from app.services.memory_store import MarkdownMemoryStore
+from app.models.memory import RenderedMemoryView
+from app.services.memory_service import MemoryService
 from app.services.openai_client import LLMClient, OpenAIAgentsClient
 from app.services.persistence import SQLitePersistence
 from app.services.repository_registry import RepositoryRegistry
@@ -27,7 +28,7 @@ class JarvisOrchestrator:
         manager: GlobalManager,
         executor: LocalExecutor,
         llm_client: LLMClient,
-        memory_store: MarkdownMemoryStore,
+        memory_service: MemoryService,
         graph_checkpointer: Optional[Any] = None,
     ) -> None:
         self.settings = settings
@@ -35,7 +36,8 @@ class JarvisOrchestrator:
         self.manager = manager
         self.executor = executor
         self.llm_client = llm_client
-        self.memory_store = memory_store
+        self.memory_service = memory_service
+        self.memory_store = memory_service
         self.graph_checkpointer = graph_checkpointer
 
     @classmethod
@@ -46,8 +48,14 @@ class JarvisOrchestrator:
     ) -> "JarvisOrchestrator":
         settings.ensure_directories()
         persistence = SQLitePersistence(settings.jarvis_db_path)
-        memory_store = MarkdownMemoryStore(settings.jarvis_memory_dir)
-        registry = RepositoryRegistry(settings, persistence, memory_store)
+        memory_service = MemoryService(
+            settings.jarvis_memory_dir,
+            max_chars=settings.jarvis_memory_max_chars,
+            view_max_chars=settings.jarvis_memory_view_max_chars,
+            max_completed_tasks=settings.jarvis_memory_max_completed_tasks,
+            useful_commands=settings.jarvis_allowed_commands,
+        )
+        registry = RepositoryRegistry(settings, persistence, memory_service)
         scheduler = TurnScheduler(persistence)
         manager = GlobalManager(scheduler, persistence)
         executor = LocalExecutor(settings)
@@ -58,7 +66,7 @@ class JarvisOrchestrator:
             manager=manager,
             executor=executor,
             llm_client=llm_client or OpenAIAgentsClient(settings),
-            memory_store=memory_store,
+            memory_service=memory_service,
             graph_checkpointer=graph_checkpointer,
         )
 
@@ -120,6 +128,13 @@ class JarvisOrchestrator:
     async def list_repo_agents(self) -> List[RepositoryAgentState]:
         return self.registry.list_agents(user_id=self.settings.jarvis_user_id)
 
+    async def get_memory_view(
+        self,
+        repo_agent_id: str,
+        max_chars: Optional[int] = None,
+    ) -> RenderedMemoryView:
+        return self.memory_service.render_memory_for_llm(repo_agent_id, max_chars=max_chars)
+
     def _repository_agent(self, state: RepositoryAgentState) -> RepositoryAgent:
         return RepositoryAgent(
             state=state,
@@ -127,6 +142,6 @@ class JarvisOrchestrator:
             manager=self.manager,
             executor=self.executor,
             llm_client=self.llm_client,
-            memory_store=self.memory_store,
+            memory_service=self.memory_service,
             graph_checkpointer=self.graph_checkpointer,
         )

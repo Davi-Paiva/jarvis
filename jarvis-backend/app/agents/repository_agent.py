@@ -10,7 +10,7 @@ from app.models.task import TaskAgentState
 from app.models.turns import TurnRequest, TurnResponse, TurnType
 from app.services.global_manager import GlobalManager
 from app.services.local_executor import LocalExecutor
-from app.services.memory_store import MarkdownMemoryStore
+from app.services.memory_service import MemoryService
 from app.services.openai_client import LLMClient
 from app.services.repository_registry import RepositoryRegistry
 
@@ -23,7 +23,7 @@ class RepositoryAgent:
         manager: GlobalManager,
         executor: LocalExecutor,
         llm_client: LLMClient,
-        memory_store: MarkdownMemoryStore,
+        memory_service: MemoryService,
         graph_checkpointer: Optional[Any] = None,
     ) -> None:
         self.state = state
@@ -31,7 +31,7 @@ class RepositoryAgent:
         self.manager = manager
         self.executor = executor
         self.llm_client = llm_client
-        self.memory_store = memory_store
+        self.memory_service = memory_service
         self.graph_checkpointer = graph_checkpointer
         self.graph = build_repository_agent_graph(checkpointer=graph_checkpointer)
 
@@ -45,16 +45,11 @@ class RepositoryAgent:
         self.state.task_goal = message
         self.state.acceptance_criteria = acceptance_criteria or []
         self.registry.save_agent_state(self.state)
-        self.memory_store.append_section(
-            self.state.repo_agent_id,
-            "Task Intake",
-            "Goal: %s\nAcceptance criteria:\n%s"
-            % (message, _format_list(self.state.acceptance_criteria)),
-        )
+        self.memory_service.record_task_started(self.state)
 
         self.manager.emit_progress(self.state.repo_agent_id, "Intake started.")
         repo_context = self._build_repo_context()
-        memory_context = self.memory_store.read_summary(self.state.repo_agent_id)
+        memory_context = self.memory_service.render_memory_for_llm(self.state.repo_agent_id).text
 
         self.state.phase = RepositoryAgentPhase.PLANNING
         self.state.requirements = await self.llm_client.extract_requirements(
@@ -70,11 +65,7 @@ class RepositoryAgent:
         )
         self.state.phase = RepositoryAgentPhase.WAITING_APPROVAL
         self.registry.save_agent_state(self.state)
-        self.memory_store.append_section(
-            self.state.repo_agent_id,
-            "Proposed Plan",
-            self.state.plan or "No plan generated.",
-        )
+        self.memory_service.record_plan_proposed(self.state)
 
         self.manager.enqueue_turn(
             TurnRequest(
@@ -131,7 +122,7 @@ class RepositoryAgent:
                 registry=self.registry,
                 executor=self.executor,
                 llm_client=self.llm_client,
-                memory_store=self.memory_store,
+                memory_service=self.memory_service,
                 graph_checkpointer=self.graph_checkpointer,
             )
             completed_task = await task_agent.execute(self.state)
@@ -155,11 +146,7 @@ class RepositoryAgent:
         self.state.final_report = await self.llm_client.final_report(self.state, task_states)
         self.state.phase = RepositoryAgentPhase.DONE
         self.registry.save_agent_state(self.state)
-        self.memory_store.append_section(
-            self.state.repo_agent_id,
-            "Final Report",
-            self.state.final_report or "No final report generated.",
-        )
+        self.memory_service.record_task_completed(self.state, task_states)
 
         for task_state in task_states:
             task_agent = TaskAgent(
@@ -167,7 +154,7 @@ class RepositoryAgent:
                 registry=self.registry,
                 executor=self.executor,
                 llm_client=self.llm_client,
-                memory_store=self.memory_store,
+                memory_service=self.memory_service,
                 graph_checkpointer=self.graph_checkpointer,
             )
             task_agent.mark_dead()
@@ -190,11 +177,6 @@ class RepositoryAgent:
     def _handle_plan_rejection(self, feedback: str) -> RepositoryAgentState:
         self.state.phase = RepositoryAgentPhase.INTAKE
         self.registry.save_agent_state(self.state)
-        self.memory_store.append_section(
-            self.state.repo_agent_id,
-            "Plan Rejected",
-            feedback,
-        )
         self.manager.enqueue_turn(
             TurnRequest(
                 user_id=self.state.user_id,

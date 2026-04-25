@@ -1,4 +1,10 @@
 from app.models.events import ManagerEvent, ManagerEventType
+from app.models.memory import (
+    CompletedTaskMemory,
+    MemoryFrontMatter,
+    RenderedMemoryView,
+    RepositoryMemory,
+)
 from app.models.repository import RepositoryAgentState, RepositoryRecord
 from app.models.schemas import (
     AgentStateOutput,
@@ -13,12 +19,16 @@ from app.models.turns import TurnRequest, TurnResponse, TurnType
 
 __all__ = [
     "AgentStateOutput",
+    "CompletedTaskMemory",
     "CreateRepoAgentInput",
     "CreateRepoAgentOutput",
     "ManagerEvent",
     "ManagerEventType",
+    "MemoryFrontMatter",
+    "RenderedMemoryView",
     "RepositoryAgentPhase",
     "RepositoryAgentState",
+    "RepositoryMemory",
     "RepositoryRecord",
     "StartTaskInput",
     "TaskAgentState",
@@ -29,4 +39,3 @@ __all__ = [
     "TurnType",
     "UserResponseInput",
 ]
-

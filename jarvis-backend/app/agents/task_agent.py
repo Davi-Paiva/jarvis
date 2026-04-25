@@ -7,7 +7,7 @@ from app.models.repository import RepositoryAgentState
 from app.models.state import TaskAgentStatus
 from app.models.task import TaskAgentState
 from app.services.local_executor import LocalExecutor
-from app.services.memory_store import MarkdownMemoryStore
+from app.services.memory_service import MemoryService
 from app.services.openai_client import LLMClient
 from app.services.repository_registry import RepositoryRegistry
 
@@ -19,21 +19,23 @@ class TaskAgent:
         registry: RepositoryRegistry,
         executor: LocalExecutor,
         llm_client: LLMClient,
-        memory_store: MarkdownMemoryStore,
+        memory_service: MemoryService,
         graph_checkpointer: Optional[Any] = None,
     ) -> None:
         self.state = state
         self.registry = registry
         self.executor = executor
         self.llm_client = llm_client
-        self.memory_store = memory_store
+        self.memory_service = memory_service
         self.graph = build_task_agent_graph(checkpointer=graph_checkpointer)
 
     async def execute(self, repo_state: RepositoryAgentState) -> TaskAgentState:
         try:
             self._set_status(TaskAgentStatus.INSPECTING)
             repo_context = self._build_repo_context(repo_state.repo_path)
-            memory_context = self.memory_store.read_summary(repo_state.repo_agent_id)
+            memory_context = self.memory_service.render_memory_for_llm(
+                repo_state.repo_agent_id
+            ).text
 
             self._set_status(TaskAgentStatus.WORKING)
             result = await self.llm_client.implement_task(
@@ -67,7 +69,6 @@ class TaskAgent:
                 )
 
             self._set_status(TaskAgentStatus.DONE)
-            self.memory_store.append_task_result(self.state)
             return self.state
         except Exception as exc:
             self.state.last_error = str(exc)

@@ -29,6 +29,13 @@ def _split_csv(value: Optional[str], default: List[str]) -> List[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
+def _int_env(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None or value.strip() == "":
+        return default
+    return int(value)
+
+
 class Settings(BaseModel):
     openai_api_key: Optional[str] = None
     openai_model: str = "gpt-5.4-mini"
@@ -50,6 +57,9 @@ class Settings(BaseModel):
             "git diff",
         ]
     )
+    jarvis_memory_max_chars: int = 30000
+    jarvis_memory_view_max_chars: int = 12000
+    jarvis_memory_max_completed_tasks: int = 12
     log_level: str = "INFO"
 
     @classmethod
@@ -78,6 +88,12 @@ class Settings(BaseModel):
                     "git diff",
                 ],
             ),
+            jarvis_memory_max_chars=_int_env("JARVIS_MEMORY_MAX_CHARS", 30000),
+            jarvis_memory_view_max_chars=_int_env("JARVIS_MEMORY_VIEW_MAX_CHARS", 12000),
+            jarvis_memory_max_completed_tasks=_int_env(
+                "JARVIS_MEMORY_MAX_COMPLETED_TASKS",
+                12,
+            ),
             log_level=os.getenv("LOG_LEVEL", "INFO"),
         )
 
@@ -91,4 +107,3 @@ def load_settings(env_file: str = ".env") -> Settings:
     settings = Settings.load(env_file)
     settings.ensure_directories()
     return settings
-

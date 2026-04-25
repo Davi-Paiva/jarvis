@@ -21,6 +21,8 @@ instead of duplicating domain logic.
 - `app/services/global_manager.py`: deterministic turn/event coordinator.
 - `app/services/turn_scheduler.py`: priority queue and intake lock rules.
 - `app/services/repository_registry.py`: repository and agent state registry.
+- `app/services/memory_service.py`: structured Markdown memory renderer and
+  compactor.
 - `app/services/local_executor.py`: only layer allowed to touch filesystem, git
   or commands.
 - `app/agents/repository_agent.py`: intake, planning, approval, execution and
@@ -37,12 +39,43 @@ The backend uses two memory layers:
   task agents, turns and manager events. When LangGraph checkpoint packages are
   installed, the graph builders also receive a SQLite checkpointer backed by the
   same path.
-- Human-readable Markdown memory at `JARVIS_MEMORY_DIR`, one file per
-  repository agent. It records task intake, proposed plan, task results and the
-  final report.
+- Human-readable Markdown memory at `JARVIS_MEMORY_DIR`, one structured file per
+  repository agent. It stores compact reusable context: summary, preferences,
+  conventions, learnings, useful commands, active decisions, risks and completed
+  task summaries.
 
 LLM calls do not own hidden memory. Each intelligent step receives the current
-state, repository context and the Markdown memory summary.
+state, repository context and a bounded rendered memory view from
+`MemoryService.render_memory_for_llm(...)`, not the full Markdown file when it
+gets large.
+
+The active Markdown file uses stable front matter and fixed sections:
+
+```md
+---
+repo_agent_id: repo_agent_123
+repo_id: repo_abc
+user_id: demo
+memory_version: 1
+last_updated: 2026-04-25T18:30:00Z
+---
+
+# Repository Memory
+
+## Current Summary
+## User Preferences
+## Active Conventions
+## Repository Learnings
+## Useful Commands
+## Active Decisions
+## Known Risks
+## Completed Tasks
+```
+
+`MemoryService` filters large logs, patches, stdout/stderr blobs and obvious
+secrets from Markdown. SQLite remains the complete operational/audit record.
+If the active Markdown grows past `JARVIS_MEMORY_MAX_CHARS`, older completed
+tasks are archived under `JARVIS_MEMORY_DIR/archive/`.
 
 ## GlobalManager Calls
 
@@ -81,6 +114,9 @@ JARVIS_USER_ID=demo
 JARVIS_DATA_DIR=./data
 JARVIS_DB_PATH=./data/jarvis.db
 JARVIS_MEMORY_DIR=./data/memory
+JARVIS_MEMORY_MAX_CHARS=30000
+JARVIS_MEMORY_VIEW_MAX_CHARS=12000
+JARVIS_MEMORY_MAX_COMPLETED_TASKS=12
 JARVIS_ALLOWED_REPO_ROOTS=/Users/joanvm/Desktop/Projects
 JARVIS_ALLOWED_COMMANDS=pytest,npm test,npm run test,npm run build,git status,git diff
 LOG_LEVEL=INFO
@@ -111,6 +147,8 @@ async def main():
         "approved",
         approved=True,
     )
+    memory_view = await orchestrator.get_memory_view(agent.repo_agent_id)
+    print(memory_view.text)
 
 
 asyncio.run(main())
