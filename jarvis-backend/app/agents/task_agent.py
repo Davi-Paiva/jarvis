@@ -45,6 +45,10 @@ class TaskAgent:
                 repo_state.repo_agent_id
             ).text
             available_files = self.executor.list_files(repo_state.repo_path, max_files=2000)
+            focus_scope = self.state.scope or _focus_paths_from_description(self.state.description)
+            visible_files = filter_scope(available_files, focus_scope)
+            if not visible_files:
+                visible_files = available_files
             repo_context = self._build_repo_context(repo_state, available_files)
             requested_file_contents: List[str] = []
             attempt_feedback: List[str] = []
@@ -82,6 +86,14 @@ class TaskAgent:
                         attempt_feedback.append(
                             "Attempt %s patch failed: %s" % (attempt, str(exc))
                         )
+                        if attempt < max_attempts:
+                            auto_contents = self._load_auto_candidate_file_contents(
+                                repo_path=repo_state.repo_path,
+                                visible_files=visible_files,
+                                already_loaded=requested_file_contents,
+                            )
+                            if auto_contents:
+                                requested_file_contents.extend(auto_contents)
                         if attempt >= max_attempts:
                             self.state.last_error = _build_patch_failure_error(attempt_feedback)
                             self._set_status(TaskAgentStatus.FAILED)
@@ -110,10 +122,29 @@ class TaskAgent:
                     break
 
                 if attempt < max_attempts and _should_retry_without_changes(result.result_summary):
+                    auto_contents = self._load_auto_candidate_file_contents(
+                        repo_path=repo_state.repo_path,
+                        visible_files=visible_files,
+                        already_loaded=requested_file_contents,
+                    )
+                    if auto_contents:
+                        requested_file_contents.extend(auto_contents)
                     attempt_feedback.append(
                         _build_missing_diff_feedback(result.result_summary)
                     )
                     continue
+                if attempt < max_attempts and _needs_full_file_context(result.result_summary):
+                    auto_contents = self._load_auto_candidate_file_contents(
+                        repo_path=repo_state.repo_path,
+                        visible_files=visible_files,
+                        already_loaded=requested_file_contents,
+                    )
+                    if auto_contents:
+                        requested_file_contents.extend(auto_contents)
+                        attempt_feedback.append(
+                            _build_full_context_feedback(result.result_summary)
+                        )
+                        continue
                 break
 
             if result is None:
@@ -221,6 +252,34 @@ class TaskAgent:
         for requested in needed_files:
             matched = _resolve_requested_file(requested, available_files)
             if not matched or matched in loaded_paths:
+                continue
+            try:
+                content = self.executor.read_file(repo_path, matched, max_chars=12000)
+            except Exception:
+                continue
+            contents.append("File: %s\n%s" % (matched, content))
+            loaded_paths.add(matched)
+        return contents
+
+    def _load_auto_candidate_file_contents(
+        self,
+        repo_path: str,
+        visible_files: List[str],
+        already_loaded: List[str],
+    ) -> List[str]:
+        loaded_paths = {
+            _loaded_file_path(section)
+            for section in already_loaded
+            if _loaded_file_path(section)
+        }
+        candidate_paths = pick_candidate_files(
+            _task_text_chunks(self.state),
+            visible_files,
+            limit=12,
+        )
+        contents: List[str] = []
+        for matched in candidate_paths:
+            if matched in loaded_paths:
                 continue
             try:
                 content = self.executor.read_file(repo_path, matched, max_chars=12000)
@@ -373,6 +432,14 @@ def _context_text_chunks(repo_state: RepositoryAgentState, task_state: TaskAgent
     ]
 
 
+def _task_text_chunks(task_state: TaskAgentState) -> List[str]:
+    return [
+        task_state.title,
+        task_state.description,
+        " ".join(task_state.scope),
+    ]
+
+
 def _build_missing_diff_feedback(result_summary: Optional[str]) -> str:
     summary = " ".join((result_summary or "").split()).strip()
     if summary:
@@ -394,6 +461,39 @@ def _build_unresolved_files_feedback(needed_files: List[str]) -> str:
         "The previous attempt requested additional files, but none of these requests could be resolved "
         "to repository files: %s. Request exact relative paths, unique basenames, or unique path suffixes."
     ) % ", ".join(needed_files[:10])
+
+
+def _build_full_context_feedback(result_summary: Optional[str]) -> str:
+    summary = " ".join((result_summary or "").split()).strip()
+    if summary:
+        return (
+            "Additional full candidate file contents were added because the previous attempt indicated "
+            "that truncated previews or incomplete component context were preventing a grounded patch. "
+            "Return a concrete unified diff now using those full files. Previous summary: %s"
+        ) % summary
+    return (
+        "Additional full candidate file contents were added because the previous attempt indicated "
+        "that truncated previews or incomplete component context were preventing a grounded patch. "
+        "Return a concrete unified diff now using those full files."
+    )
+
+
+def _needs_full_file_context(result_summary: Optional[str]) -> bool:
+    summary = " ".join((result_summary or "").lower().split())
+    if not summary:
+        return False
+    signals = (
+        "truncated",
+        "full current contents",
+        "full component content",
+        "full contents of the page components",
+        "shared component files",
+        "need the full current contents",
+        "visible file previews are truncated",
+        "before the full component content needed",
+        "current repository snapshot",
+    )
+    return any(signal in summary for signal in signals)
 
 
 def _should_retry_without_changes(result_summary: Optional[str]) -> bool:
