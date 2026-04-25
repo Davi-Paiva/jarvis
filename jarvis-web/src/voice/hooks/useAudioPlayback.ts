@@ -7,6 +7,9 @@ type UseAudioPlaybackReturn = {
   stop: () => void
   isPlaying: boolean
   getVolume: () => number
+  // PCM streaming — used by VoiceProvider for gapless chunk-by-chunk playback.
+  initPcmStream: (sampleRate: number, turnId: string) => void
+  appendPcmChunk: (base64: string, turnId: string) => void
 }
 
 function base64ToBlob(base64: string, mimeType: string): Blob {
@@ -29,6 +32,15 @@ export function useAudioPlayback(): UseAudioPlaybackReturn {
   const sourceRef = useRef<AudioBufferSourceNode | null>(null)
   const objectUrlRef = useRef<string | null>(null)
   const [isPlaying, setIsPlaying] = useState(false)
+
+  // PCM stream scheduler — tracks scheduled AudioBufferSourceNodes so they can
+  // be stopped cleanly on barge-in and so playback state is accurate.
+  const pcmSchedulerRef = useRef<{
+    turnId: string
+    nextStartTime: number   // AudioContext time when next chunk should start
+    sampleRate: number
+    activeSources: AudioBufferSourceNode[]
+  } | null>(null)
 
   const getAudioContext = useCallback(() => {
     if (audioContextRef.current) {
@@ -87,6 +99,13 @@ export function useAudioPlayback(): UseAudioPlaybackReturn {
       sourceRef.current.stop()
       sourceRef.current.disconnect()
       sourceRef.current = null
+    }
+
+    // Stop any scheduled PCM sources immediately.
+    const scheduler = pcmSchedulerRef.current
+    if (scheduler) {
+      scheduler.activeSources.forEach(s => { try { s.stop(0) } catch { /* already ended */ } })
+      pcmSchedulerRef.current = null
     }
 
     clearObjectUrl()
@@ -216,5 +235,79 @@ export function useAudioPlayback(): UseAudioPlaybackReturn {
     return sum / (data.length * 255)
   }, [])
 
-  return { unlock, playFromUrl, playFromBase64, stop, isPlaying, getVolume }
+  // ── PCM streaming ─────────────────────────────────────────────────────────
+  // ElevenLabs PCM output (pcm_22050 etc.) is raw 16-bit signed little-endian
+  // samples.  Each chunk maps directly to an AudioBuffer with no codec framing,
+  // so splits at any byte boundary are always safe.
+
+  const initPcmStream = useCallback((sampleRate: number, turnId: string) => {
+    // Stop any in-flight PCM sources from a previous turn.
+    const existing = pcmSchedulerRef.current
+    if (existing) {
+      existing.activeSources.forEach(s => { try { s.stop(0) } catch { /* ignore */ } })
+    }
+
+    const context = getAudioContext()
+    if (!context) return
+    if (context.state === 'suspended') void context.resume()
+
+    pcmSchedulerRef.current = {
+      turnId,
+      // Start time is determined lazily in appendPcmChunk — set to 0 so the
+      // first Math.max(now + 0.005, nextStartTime) always resolves to now+5ms.
+      nextStartTime: 0,
+      sampleRate,
+      activeSources: [],
+    }
+    setIsPlaying(true)
+  }, [getAudioContext])
+
+  const appendPcmChunk = useCallback((base64: string, turnId: string) => {
+    const scheduler = pcmSchedulerRef.current
+    if (!scheduler || scheduler.turnId !== turnId) return
+
+    const context = getAudioContext()
+    if (!context) return
+
+    // Decode base64 → Uint8Array → Int16Array (little-endian, mono)
+    const binary = atob(base64)
+    const bytes = new Uint8Array(binary.length)
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+
+    const int16 = new Int16Array(bytes.buffer)
+    const numSamples = int16.length
+    if (numSamples === 0) return
+
+    // Convert Int16 [-32768, 32767] → Float32 [-1.0, 1.0] for Web Audio API.
+    const audioBuffer = context.createBuffer(1, numSamples, scheduler.sampleRate)
+    const channelData = audioBuffer.getChannelData(0)
+    for (let i = 0; i < numSamples; i++) channelData[i] = int16[i] / 32768.0
+
+    // Route through the analyser so the orb volume tracker stays active.
+    const source = context.createBufferSource()
+    source.buffer = audioBuffer
+    source.connect(analyserRef.current ?? context.destination)
+
+    // Schedule gaplessly: start exactly where the previous chunk ended.
+    const now = context.currentTime
+    const startAt = Math.max(now + 0.005, scheduler.nextStartTime)
+    source.start(startAt)
+    scheduler.nextStartTime = startAt + audioBuffer.duration
+    scheduler.activeSources.push(source)
+
+    source.onended = () => {
+      const idx = scheduler.activeSources.indexOf(source)
+      if (idx >= 0) scheduler.activeSources.splice(idx, 1)
+      // Mark as done only when ALL sources for this turn have finished.
+      if (
+        scheduler.activeSources.length === 0 &&
+        pcmSchedulerRef.current?.turnId === turnId
+      ) {
+        pcmSchedulerRef.current = null
+        setIsPlaying(false)
+      }
+    }
+  }, [getAudioContext])
+
+  return { unlock, playFromUrl, playFromBase64, stop, isPlaying, getVolume, initPcmStream, appendPcmChunk }
 }
