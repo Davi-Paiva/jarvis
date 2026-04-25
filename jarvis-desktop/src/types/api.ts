@@ -7,7 +7,7 @@ export interface CreateRepoAgentInput {
 }
 
 export interface CreateRepoAgentOutput {
-  id: string;
+  repo_id: string;
   repo_path: string;
   display_name: string;
   branch_name?: string;
