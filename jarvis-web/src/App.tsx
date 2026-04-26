@@ -1,7 +1,6 @@
 import { useJarvisSession } from './app/useJarvisSession';
 import { ConnectionScreen } from './features/connection/ConnectionScreen';
 import { CallScreen } from './features/call/CallScreen';
-import { ApprovalModal } from './features/approvals/ApprovalModal';
 import './App.css';
 
 function App() {
@@ -17,26 +16,17 @@ function App() {
     );
   }
 
-  const pendingApproval = session.approvals[0] ?? null;
-
   return (
-    <>
-      <CallScreen
-        socketConnected={session.socketConnected}
-        listening={session.listening}
-        speaking={session.speaking}
-        transcript={session.transcript}
-        messages={session.messages}
-        activeAgent={session.activeAgent}
-        getVolume={session.getVolume}
-        onSendMessage={session.sendMessage}
-      />
-      {pendingApproval && (
-        <ApprovalModal
-          approval={pendingApproval}
-        />
-      )}
-    </>
+    <CallScreen
+      socketConnected={session.socketConnected}
+      listening={session.listening}
+      speaking={session.speaking}
+      transcript={session.transcript}
+      messages={session.messages}
+      activeAgent={session.activeAgent}
+      getVolume={session.getVolume}
+      onSendMessage={session.sendMessage}
+    />
   );
 }
 

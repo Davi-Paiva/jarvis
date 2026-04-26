@@ -60,9 +60,9 @@ export function CallScreen({
     responding: 'Jarvis is responding...',
   };
 
-  // Subtitle: live transcript first, otherwise last assistant message
+  // Unified transcript box: live transcript first, otherwise last assistant message.
   const lastAI = [...messages].reverse().find(m => m.role === 'assistant');
-  const subtitle = transcript || (inCall ? lastAI?.content ?? '' : '');
+  const transcriptBoxText = transcript || (inCall ? lastAI?.content ?? '' : '');
 
   return (
     <div className="jv-screen jv-call-screen">
@@ -94,7 +94,7 @@ export function CallScreen({
         {/* Centre labels — float over orb */}
         <main className="jv-call-body">
           <p className="jv-call-state-label">{stateLabel[callState]}</p>
-          {subtitle && <p className="jv-call-subtitle">{subtitle}</p>}
+          {transcriptBoxText && <p className="jv-call-transcript">{transcriptBoxText}</p>}
         </main>
 
         {/* Footer */}
