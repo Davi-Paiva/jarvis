@@ -59,6 +59,21 @@ set JAVA_EXE=%JAVA_HOME%/bin/java.exe
 
 if exist "%JAVA_EXE%" goto execute
 
+for %%i in ("%JAVA_HOME%") do set JAVA_HOME_PARENT=%%~dpi
+for %%i in ("%JAVA_HOME%") do set JAVA_HOME_DIR=%%~nxi
+for /f "tokens=1 delims=." %%i in ("%JAVA_HOME_DIR%") do set JAVA_HOME_MAJOR_DIR=%%~i
+set JAVA_HOME_FALLBACK=%JAVA_HOME_PARENT%%JAVA_HOME_MAJOR_DIR%
+set JAVA_EXE=%JAVA_HOME_FALLBACK%/bin/java.exe
+
+if exist "%JAVA_EXE%" (
+	set JAVA_HOME=%JAVA_HOME_FALLBACK%
+	goto execute
+)
+
+set JAVA_EXE=java.exe
+%JAVA_EXE% -version >NUL 2>&1
+if %ERRORLEVEL% equ 0 goto execute
+
 echo. 1>&2
 echo ERROR: JAVA_HOME is set to an invalid directory: %JAVA_HOME% 1>&2
 echo. 1>&2

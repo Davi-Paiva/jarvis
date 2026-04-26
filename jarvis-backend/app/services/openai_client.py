@@ -1190,6 +1190,11 @@ class OpenAIAgentsClient(FakeLLMClient):
         ) % (name, output_preview)
         raise RuntimeError(error_msg)
 
+    def _trim_for_prompt(self, text: str, max_chars: int = 12000) -> str:
+        if len(text) <= max_chars:
+            return text
+        return text[:max_chars] + "\n...<truncated>"
+
 
 def _extract_json_payload(raw_output: str) -> Optional[Any]:
     candidates = []
@@ -1388,10 +1393,6 @@ def _first_present(payload: dict, keys: List[str]) -> Any:
         if key in payload:
             return payload[key]
     return None
-    def _trim_for_prompt(self, text: str, max_chars: int = 12000) -> str:
-        if len(text) <= max_chars:
-            return text
-        return text[:max_chars] + "\n...<truncated>"
 
 
 IGNORED_DIFF_PREFIXES = (
