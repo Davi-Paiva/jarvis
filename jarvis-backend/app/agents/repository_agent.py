@@ -1166,11 +1166,11 @@ def _extract_branch_name_from_text(text: str) -> str:
 
 
 def _format_files_for_voice(file_paths: List[str]) -> str:
-    """Convert file paths to natural voice-friendly descriptions.
+    """Convert file paths to natural voice-friendly descriptions using just filenames.
     
     Examples:
-        ['app/services/openai_client.py'] -> 'the openai client file in the services folder'
-        ['app/agents/repo.py', 'app/models/task.py'] -> 'the repo file in agents and the task file in models'
+        ['app/services/openai_client.py'] -> 'openai_client.py'
+        ['app/agents/repo.py', 'app/models/task.py'] -> 'repo.py and task.py'
         ['*.py'] -> 'Python files'
     """
     if not file_paths:
@@ -1198,41 +1198,17 @@ def _format_files_for_voice(file_paths: List[str]) -> str:
             else:
                 file_type = "files"
             
-            # Extract meaningful folder from the pattern
-            # e.g., "app/services/**/*.py" -> "services"
-            parts = [p for p in clean_path.split('/') if p and p != '.' and not p.startswith('*')]
-            if parts:
-                # Get the most specific (last) folder mentioned
-                folder_name = parts[-1] if parts[-1] else parts[0] if len(parts) > 0 else None
-                if folder_name:
-                    descriptions.append(f"{file_type} in the {folder_name} folder")
-                else:
-                    descriptions.append(file_type)
-            else:
-                descriptions.append(file_type)
+            descriptions.append(file_type)
             continue
         
-        # Regular file path
-        filename = path_obj.stem  # Without extension
-        parent = path_obj.parent
+        # Regular file path - just use filename.extension
+        full_name = path_obj.name  # Filename with extension
         
         # Skip if we couldn't extract a meaningful name
-        if not filename or filename in ['*', '**']:
+        if not full_name or full_name in ['*', '**']:
             continue
         
-        # Clean up filename for speech (remove underscores, make readable)
-        clean_name = filename.replace('_', ' ').replace('-', ' ')
-        
-        # Build natural description
-        if parent and str(parent) not in ['.', '', '**']:
-            folder_name = parent.name
-            # Don't use ** as a folder name
-            if folder_name and folder_name not in ['**', '*', '.']:
-                descriptions.append(f"the {clean_name} file in {folder_name}")
-            else:
-                descriptions.append(f"the {clean_name} file")
-        else:
-            descriptions.append(f"the {clean_name} file")
+        descriptions.append(full_name)
     
     # If we filtered everything out, return generic
     if not descriptions:

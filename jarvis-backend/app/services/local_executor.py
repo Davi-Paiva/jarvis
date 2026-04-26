@@ -71,6 +71,37 @@ class LocalExecutor:
             )
         return _validate_patch_syntax(normalized_patch)
 
+    async def write_replacement_files(
+        self,
+        repo_path: str,
+        replacements: Dict[str, Optional[str]],
+        scope: Optional[Iterable[str]] = None,
+    ) -> List[str]:
+        """Write files directly from replacement_files dict. Returns list of changed paths."""
+        root = self._assert_repo_allowed(repo_path)
+        changed_paths = []
+        
+        for relative_path, new_content in sorted(replacements.items()):
+            # Validate scope
+            if scope and not any(relative_path.startswith(s) for s in scope):
+                raise ValueError(f"File outside scope: {relative_path}")
+            
+            path = self._resolve_inside_repo(repo_path, relative_path)
+            
+            async with self._lock_for_repo(root):
+                if new_content is None:
+                    # Delete file
+                    if path.exists():
+                        path.unlink()
+                        changed_paths.append(relative_path)
+                else:
+                    # Write file
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text(new_content, encoding="utf-8")
+                    changed_paths.append(relative_path)
+        
+        return changed_paths
+
     def build_patch_from_replacements(
         self,
         repo_path: str,
@@ -84,11 +115,11 @@ class LocalExecutor:
             old_content = ""
             if old_exists and path.is_file():
                 old_content = path.read_text(encoding="utf-8", errors="replace")
-            old_lines = old_content.splitlines(keepends=True)
+            old_lines = old_content.splitlines(keepends=False)
             new_text = None if new_content is None else _ensure_patch_text_newline(str(new_content))
             if new_text is None and not old_exists:
                 continue
-            new_lines = [] if new_text is None else new_text.splitlines(keepends=True)
+            new_lines = [] if new_text is None else new_text.splitlines(keepends=False)
             if old_content == (new_text or ""):
                 continue
             from_file = "/dev/null" if not old_exists else "a/%s" % relative_path
@@ -104,7 +135,16 @@ class LocalExecutor:
             )
             if not diff_lines:
                 continue
+            # Add proper git diff header
             patch_chunks.append("diff --git a/{0} b/{0}".format(relative_path))
+            if not old_exists:
+                patch_chunks.append("new file mode 100644")
+                patch_chunks.append("index 0000000..0000000")
+            elif new_text is None:
+                patch_chunks.append("deleted file mode 100644")
+                patch_chunks.append("index 0000000..0000000")
+            else:
+                patch_chunks.append("index 0000000..0000000 100644")
             patch_chunks.extend(diff_lines)
         if not patch_chunks:
             return ""

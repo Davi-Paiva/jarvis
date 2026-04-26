@@ -96,7 +96,7 @@ class JarvisApiClient(private val baseUrl: String = resolveBaseUrl()) {
 	}
 
 	companion object {
-		const val DEFAULT_BASE_URL = "http://localhost:8010"
+		const val DEFAULT_BASE_URL = "http://localhost:8000"
 
 		fun resolveBaseUrl(): String {
 			val configuredUrl = System.getenv("JARVIS_BACKEND_URL")
