@@ -96,7 +96,10 @@ async def stream_elevenlabs_chunks(text: str) -> AsyncIterator[bytes]:
     payload = {
         "text": text,
         "model_id": model_id,
-        "voice_settings": {"stability": 0.45, "similarity_boost": 0.8},
+        "voice_settings": {
+            "stability": 0.45, 
+            "similarity_boost": 0.8,
+        },
     }
     headers = {
         "xi-api-key": api_key,

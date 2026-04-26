@@ -266,9 +266,11 @@ class FakeLLMClient(LLMClient):
                 return "general codebase changes"
             if len(paths) == 1:
                 p = Path(paths[0])
-                name = p.stem.replace('_', ' ').replace('-', ' ')
+                name = p.name  # Full filename with extension
                 folder = p.parent.name if p.parent and str(p.parent) != '.' else None
-                return f"the {name} file" + (f" in the {folder} folder" if folder else "")
+                if folder:
+                    return f"{name} in the {folder} folder"
+                return f"{name}"
             return "several files across the codebase"
         
         return (
@@ -322,8 +324,12 @@ class FakeLLMClient(LLMClient):
             file_desc = []
             for f in repo_state.changed_files[:3]:
                 p = Path(f)
-                name = p.stem.replace('_', ' ').replace('-', ' ')
-                file_desc.append(f"the {name} file")
+                name = p.name  # Full filename with extension
+                folder = p.parent.name if p.parent and str(p.parent) != '.' else None
+                if folder:
+                    file_desc.append(f"{name} in {folder}")
+                else:
+                    file_desc.append(f"{name}")
             if len(repo_state.changed_files) > 3:
                 file_desc.append(f"and {len(repo_state.changed_files) - 3} others")
             files_text = ", ".join(file_desc) if file_desc else "none"
@@ -406,7 +412,7 @@ class OpenAIAgentsClient(FakeLLMClient):
             "GUIDELINES:\n"
             "- Write 2-4 paragraphs explaining the overall approach\n"
             "- When mentioning files, describe them naturally like a coworker would\n"
-            "- For example, say 'the client file in the services folder' not 'services/client.py'\n"
+            "- For example, say 'client.py in the services folder' not 'services/client.py'\n"
             "- Mention specific relevant modules or components that will be involved\n"
             "- Explain the high-level strategy and why this approach makes sense\n"
             "- Use conversational, friendly tone\n"
@@ -441,7 +447,7 @@ class OpenAIAgentsClient(FakeLLMClient):
             "- Write like you're explaining to a coworker - use 'I'll' or 'We'll' or 'Let's'\n"
             "- Be casual and conversational - contractions are good\n"
             "- Write for natural voice output\n"
-            "- When mentioning files, use natural language like 'the client file in services'\n"
+            "- When mentioning files, use natural language like 'client.py in services'\n"
             "- One sentence per description - keep it brief\n"
             "- In the 'scope' array, include actual file paths or patterns for technical processing\n\n"
             "Task goal: %s\n"
@@ -509,7 +515,7 @@ class OpenAIAgentsClient(FakeLLMClient):
             "- DO NOT use markdown formatting - no asterisks, no bold, no headers\n"
             "- Write naturally for voice output - avoid special characters and formatting\n"
             "- When mentioning file paths, describe them naturally like a coworker would\n"
-            "- For example, say 'the client file in the services folder' not 'services/client.py'\n"
+            "- For example, say 'client.py in the services folder' not 'services/client.py'\n"
             "- End by asking if they have more questions or are ready to approve\n\n"
             "Current plan step being discussed:\n"
             "Title: %s\n"
@@ -649,7 +655,7 @@ class OpenAIAgentsClient(FakeLLMClient):
             "DO NOT use markdown formatting - no asterisks, no bold, no headers, no bullet points.\\n"
             "Write naturally for voice output. Use complete sentences.\\n"
             "When mentioning file paths, describe them naturally like a coworker would.\\n"
-            "For example, say 'the client file in the services folder' not 'services/client.py'.\\n"
+            "For example, say 'client.py in the services folder' not 'services/client.py'.\\n"
             "Summarize what was done, which files were changed, and test results.\\n"
             "State: %s\\nTasks: %s"
         ) % (

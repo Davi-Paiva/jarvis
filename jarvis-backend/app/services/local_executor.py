@@ -84,11 +84,11 @@ class LocalExecutor:
             old_content = ""
             if old_exists and path.is_file():
                 old_content = path.read_text(encoding="utf-8", errors="replace")
-            old_lines = old_content.splitlines(keepends=True)
+            old_lines = old_content.splitlines(keepends=False)
             new_text = None if new_content is None else _ensure_patch_text_newline(str(new_content))
             if new_text is None and not old_exists:
                 continue
-            new_lines = [] if new_text is None else new_text.splitlines(keepends=True)
+            new_lines = [] if new_text is None else new_text.splitlines(keepends=False)
             if old_content == (new_text or ""):
                 continue
             from_file = "/dev/null" if not old_exists else "a/%s" % relative_path
