@@ -344,6 +344,7 @@ async def websocket_voice(websocket: WebSocket) -> None:
         except Exception:
             pass
     finally:
+        voice_service.end_session(session_id)
         orchestrator.manager.unregister_listener(listener_queue)
         if listener_task is not None:
             listener_task.cancel()

@@ -104,7 +104,15 @@ export function useAudioPlayback(): UseAudioPlaybackReturn {
     // Stop any scheduled PCM sources immediately.
     const scheduler = pcmSchedulerRef.current
     if (scheduler) {
-      scheduler.activeSources.forEach(s => { try { s.stop(0) } catch { /* already ended */ } })
+      scheduler.activeSources.forEach(s => {
+        try {
+          s.stop(0)
+          s.disconnect()
+        } catch {
+          /* already ended */
+        }
+      })
+      scheduler.activeSources = []
       pcmSchedulerRef.current = null
     }
 
@@ -244,7 +252,15 @@ export function useAudioPlayback(): UseAudioPlaybackReturn {
     // Stop any in-flight PCM sources from a previous turn.
     const existing = pcmSchedulerRef.current
     if (existing) {
-      existing.activeSources.forEach(s => { try { s.stop(0) } catch { /* ignore */ } })
+      existing.activeSources.forEach(s => {
+        try {
+          s.stop(0)
+          s.disconnect()
+        } catch {
+          /* ignore */
+        }
+      })
+      existing.activeSources = []
     }
 
     const context = getAudioContext()

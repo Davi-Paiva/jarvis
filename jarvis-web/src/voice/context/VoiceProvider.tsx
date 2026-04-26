@@ -86,6 +86,7 @@ export function VoiceProvider({ children, socket }: VoiceProviderProps) {
     new Set<(message: ServerToClientMessage) => void>(),
   )
   const loopbackMode = import.meta.env.VITE_VOICE_LOCAL_LOOPBACK === 'true'
+  const bargeInEnabled = import.meta.env.VITE_VOICE_BARGE_IN === 'true'
 
   // Stream state refs — which path is active for the current turn.
   const streamModeRef = useRef<'pcm' | 'accumulate' | null>(null)
@@ -338,13 +339,13 @@ export function VoiceProvider({ children, socket }: VoiceProviderProps) {
 
   useEffect(() => {
     const agentIsSpeaking = isSpeaking || isAudioPlaying
-    if (agentIsSpeaking && !isListening) {
+    if (bargeInEnabled && agentIsSpeaking && !isListening) {
       startBargeInMonitor()
       return
     }
 
     stopBargeInMonitor()
-  }, [isAudioPlaying, isListening, isSpeaking, startBargeInMonitor, stopBargeInMonitor])
+  }, [bargeInEnabled, isAudioPlaying, isListening, isSpeaking, startBargeInMonitor, stopBargeInMonitor])
 
   // ── WebSocket message handler ─────────────────────────────────────────────
   useEffect(() => {

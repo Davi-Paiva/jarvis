@@ -62,6 +62,11 @@ class VoiceSessionService:
         self.command_router = command_router or VoiceCommandRouter()
         self.sessions: Dict[str, VoiceSessionRuntime] = {}
 
+    def end_session(self, session_id: Optional[str]) -> None:
+        if not session_id:
+            return
+        self.sessions.pop(session_id, None)
+
     def start_session(self, session_id: Optional[str] = None, enable_audio: bool = True) -> List[ServerToClientMessage]:
         runtime = self._get_or_create_runtime(session_id=session_id, enable_audio=enable_audio)
         self._hydrate_runtime(runtime)

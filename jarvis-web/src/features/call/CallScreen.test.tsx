@@ -31,18 +31,6 @@ describe('CallScreen', () => {
             content: 'Approval pending for alpha-app.',
           },
         ]}
-        repos={[
-          {
-            repoAgentId: 'repo-1',
-            repoId: 'repo-record-1',
-            displayName: 'alpha-app',
-            repoPath: '/tmp/alpha-app',
-            phase: 'PLANNING',
-            status: 'running',
-            pendingTurns: 1,
-          },
-        ]}
-        activeRepoAgentId="repo-1"
         activeAgent={{
           id: 'repo-1',
           name: 'alpha-app',
@@ -50,7 +38,6 @@ describe('CallScreen', () => {
         }}
         getVolume={() => 0}
         onSendMessage={() => undefined}
-        onSwitchRepository={() => true}
       />,
     )
 
