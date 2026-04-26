@@ -37,6 +37,23 @@ class CreateRepoAgentOutput(BaseModel):
     phase: str
 
 
+class AnalyzeInput(BaseModel):
+    fileName: Optional[str] = None
+    content: Optional[str] = None
+    diff: Optional[str] = None
+
+
+class AnalyzeLineExplanation(BaseModel):
+    lineNumber: int
+    summary: str
+
+
+class AnalyzeOutput(BaseModel):
+    summary: str
+    steps: List[str] = Field(default_factory=list)
+    lineExplanations: List[AnalyzeLineExplanation] = Field(default_factory=list)
+
+
 class StartTaskInput(BaseModel):
     message: str
     acceptance_criteria: List[str] = Field(default_factory=list)

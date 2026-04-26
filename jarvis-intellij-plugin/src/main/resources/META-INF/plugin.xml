@@ -1,0 +1,40 @@
+<idea-plugin>
+    <id>com.jarvis.intellij</id>
+    <name>Jarvis Assistant</name>
+    <vendor>Jarvis Hackathon</vendor>
+
+    <description><![CDATA[
+        Review and understand project code with Jarvis inside IntelliJ IDEA.
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <toolWindow
+            id="Jarvis Assistant"
+            anchor="right"
+            factoryClass="com.jarvis.intellij.toolwindow.JarvisToolWindowFactory"
+            canCloseContents="false" />
+    </extensions>
+
+    <actions>
+        <action
+            id="Jarvis.OpenImportDocumentation"
+            class="com.jarvis.intellij.features.documentation.OpenImportDocumentationAction"
+            text="Jarvis: Open Import Documentation"
+            description="Open documentation for the import under the mouse or caret">
+            <keyboard-shortcut keymap="$default" first-keystroke="ctrl shift z" />
+            <keyboard-shortcut keymap="Mac OS X" first-keystroke="ctrl shift z" />
+            <add-to-group group-id="EditorPopupMenu" anchor="last" />
+        </action>
+        <action
+            id="Jarvis.ShowDependencyDocumentation"
+            class="com.jarvis.intellij.features.documentation.ShowDependencyDocumentationAction"
+            text="Jarvis: Dependency Documentation"
+            description="Show all project dependencies and open official docs in one click">
+            <keyboard-shortcut keymap="$default" first-keystroke="ctrl alt shift D" />
+            <keyboard-shortcut keymap="Mac OS X" first-keystroke="meta alt shift D" />
+            <add-to-group group-id="ToolsMenu" anchor="last" />
+        </action>
+    </actions>
+</idea-plugin>
