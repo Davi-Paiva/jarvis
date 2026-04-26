@@ -574,30 +574,61 @@ class OpenAIAgentsClient(FakeLLMClient):
         memory_context: str,
     ) -> TaskImplementationResult:
         prompt = (
-            "Propose implementation output as JSON with result_summary, proposed_patch, changed_files, needed_files, test_command.\n"
+            "RESPOND WITH JSON ONLY - NO EXPLANATORY TEXT.\n\n"
+            "Propose implementation output as JSON with result_summary, proposed_patch, changed_files, needed_files, test_command, replacement_files.\n"
             "This is a real repository modification flow, not an analysis-only flow.\n"
-            "This is the execution phase. Do not ask the user for more context from this prompt.\n"
-            "You must either produce a patch from the repository files you can see, or request more repository files through `needed_files`.\n"
+            "This is the execution phase. Do not ask the user for more context from this prompt.\n\n"
+            "TWO WAYS TO MAKE CODE CHANGES:\n"
+            "1. PATCH APPROACH: Return a unified git diff in `proposed_patch` (preferred for small targeted changes)\n"
+            "2. REPLACEMENT APPROACH: Return complete file contents in `replacement_files` as a dict mapping file paths to their new full content\n\n"
+            "WHEN TO USE replacement_files:\n"
+            "- If the feedback says 'Switch strategy now: return replacement_files' - you MUST use this approach\n"
+            "- If previous patch attempts failed validation or git apply\n"
+            "- If you're having trouble with diff syntax\n"
+            "- For large refactors where a patch would be complex\n"
+            "Format: {\"src/path/file.tsx\": \"complete new file content here\"}\n"
+            "Include ONLY files you're modifying. Each value should be the complete new file content.\n\n"
+            "You must either produce changes via patch/replacement_files, or request more repository files through `needed_files`.\n\n"
+            "HOW TO REQUEST FILES - CRITICAL:\n"
+            "- If you mention 'need', 'needed', 'require', 'not available', 'cannot access', or similar in your result_summary, "
+            "you MUST populate the `needed_files` array with exact file paths.\n"
+            "- Example: needed_files = [\"src/pages/Home/Home.tsx\", \"src/App.tsx\", \"src/components/Hero.tsx\"]\n"
+            "- Do NOT say you need files in result_summary without adding them to needed_files - this will cause execution to fail.\n"
+            "- If you can see enough file content to implement safely, do NOT request more files - just implement.\n"
+            "- NEVER say files are 'not available as repository files' - if you know the path, add it to needed_files.\n\n"
+            "The initial file previews show the most relevant files with up to 50KB and 800 lines each - these are NOT truncated.\n"
+            "If you see a file preview that appears complete, use it directly. Only request more files if truly needed.\n"
             "The task payload is an implementation brief synthesized from approved conversational plan steps.\n"
             "Treat inspection, design, and validation steps in that brief as context, not as permission to stop without changes.\n"
             "Treat the repository capability summary and visible files as authoritative grounding.\n"
             "If the task requires a new page, stylesheet, endpoint, template, or other feature surface and no exact target file exists yet, you may create the minimal new files needed as long as they fit the detected stack and repository structure.\n"
             "Do not stop just because an exact target file is missing if the brief explicitly allows creating the smallest grounded addition.\n"
             "Prefer integrating into an existing app shell when one is visible. If none is visible, create the smallest viable grounded entrypoint consistent with the detected stack instead of inventing an unrelated framework.\n"
-            "If the repo context includes previous patch application errors, return a corrected patch that fixes those exact git apply issues.\n"
-            "If code changes are needed, `proposed_patch` must be a raw unified git diff string.\n"
+            "If the repo context includes previous patch application errors, strongly consider using `replacement_files` instead of trying another patch.\n"
+            "If using PATCH APPROACH with `proposed_patch`, it must be a raw unified git diff string.\n"
             "Every modified file must include its own full header block: `diff --git`, `---`, `+++`, then hunks.\n"
             "Never return hunk-only fragments that start directly with `@@`.\n"
             "Do not wrap the patch in markdown fences.\n"
             "Do not add commentary before or after the diff.\n"
-            "Use `needed_files` only when you need additional specific files before proposing a safe patch; otherwise return an empty list.\n"
-            "Never return a placeholder response such as saying you will produce the patch in the next step, that this attempt is only an inspection pass, or that no diff has been applied yet.\n"
-            "If you already have enough grounding to describe the implementation, you must return the concrete diff now.\n"
-            "For MODIFY_CODE tasks, do not set `proposed_patch` to null unless the repository already fully satisfies the request or you need more files through `needed_files`.\n"
-            "If no more repository files would help and you cannot produce a patch, explain the blocker in `result_summary` and leave `needed_files` empty.\n"
+            "Use `needed_files` only when you need additional specific files before proposing a safe change; otherwise return an empty list.\n"
+            "Never return a placeholder response such as saying you will produce changes in the next step, that this attempt is only an inspection pass, or that no diff has been applied yet.\n"
+            "If you already have enough grounding to describe the implementation, you must return the concrete changes now (via patch or replacement_files).\n"
+            "For MODIFY_CODE tasks, do not set both `proposed_patch` and `replacement_files` to null/empty unless the repository already fully satisfies the request or you need more files through `needed_files`.\n"
+            "If no more repository files would help and you cannot produce changes, explain the blocker in `result_summary` and leave `needed_files` empty.\n"
             "`test_command` must be either null or a real shell command that can be executed from the repository root.\n"
             "Never use explanatory prose in `test_command`.\n"
-            "Treat `scope` as a hard constraint only when it is non-empty. If `scope` is empty, use the approved focus paths and visible repository files as guidance for a minimal grounded patch.\n"
+            "Treat `scope` as a hard constraint only when it is non-empty. If `scope` is empty, use the approved focus paths and visible repository files as guidance for a minimal grounded implementation.\n\n"
+            "OUTPUT FORMAT - CRITICAL:\n"
+            "Return ONLY a valid JSON object. Do NOT add any explanatory text before or after the JSON.\n"
+            "Required JSON structure:\n"
+            "{\n"
+            "  \"result_summary\": \"string describing what was done\",\n"
+            "  \"proposed_patch\": \"unified diff string or null\",\n"
+            "  \"replacement_files\": {\"path/to/file\": \"complete content\"} or {},\n"
+            "  \"changed_files\": [\"list\", \"of\", \"paths\"] or [],\n"
+            "  \"needed_files\": [\"list\", \"of\", \"paths\"] or [],\n"
+            "  \"test_command\": \"shell command or null\"\n"
+            "}\n\n"
             "Task: %s\nRepo context:\n%s\nMemory:\n%s"
         ) % (task_state.model_dump(mode="json"), repo_context, memory_context)
         parsed = await self._run_json_agent(
@@ -638,47 +669,114 @@ class OpenAIAgentsClient(FakeLLMClient):
         return str(result.final_output)
 
     async def _run_json_agent(self, name: str, prompt: str, shape_hint: str) -> Any:
-        raw_output = await self._run_agent(name, prompt)
+        # Override agent creation for JSON-specific instructions
+        self._require_live_agent()
+        agent = self._agent_cls(  # type: ignore[misc]
+            name=name,
+            model=self.settings.openai_model,
+            instructions=(
+                "You are a backend coding assistant that returns structured JSON output only. "
+                "Never add explanatory text, markdown formatting, or commentary. "
+                "Your entire response must be valid JSON that can be parsed directly. "
+                "If the prompt asks for JSON, respond with ONLY the JSON object or array."
+            ),
+        )
+        result = await self._runner_cls.run(agent, prompt)  # type: ignore[union-attr]
+        raw_output = str(result.final_output)
+        
         parsed = _extract_json_payload(raw_output)
         if parsed is not None:
             return parsed
 
+        # First repair attempt: explicit JSON extraction request
         repair_prompt = (
             "Convert the following model output into strict JSON only.\n"
             "%s\n"
             "Do not add markdown fences or commentary.\n"
+            "Return ONLY the JSON object or array.\n"
             "Original output:\n%s"
         ) % (shape_hint, raw_output)
-        repaired_output = await self._run_agent(f"{name} JSON repair", repair_prompt)
+        
+        # Use regular _run_agent for repair (not recursive)
+        repair_agent = self._agent_cls(  # type: ignore[misc]
+            name=f"{name} JSON repair",
+            model=self.settings.openai_model,
+            instructions="Extract and return only valid JSON from the given text. No other text.",
+        )
+        repair_result = await self._runner_cls.run(repair_agent, repair_prompt)  # type: ignore[union-attr]
+        repaired_output = str(repair_result.final_output)
+        
         repaired = _extract_json_payload(repaired_output)
         if repaired is not None:
             return repaired
-        raise RuntimeError("%s did not return valid JSON output." % name)
+        
+        # Log the failure with truncated output for debugging
+        output_preview = raw_output[:500] if len(raw_output) > 500 else raw_output
+        error_msg = (
+            "%s did not return valid JSON output. "
+            "First 500 chars of output: %s... "
+            "Check if the model is returning explanatory text instead of JSON."
+        ) % (name, output_preview)
+        raise RuntimeError(error_msg)
 
 
 def _extract_json_payload(raw_output: str) -> Optional[Any]:
-    candidates = [raw_output.strip()]
-
+    candidates = []
+    
+    # Try direct parse first
+    candidates.append(raw_output.strip())
+    
+    # Extract from markdown code fences
     fenced_json = re.findall(r"```(?:json)?\s*(.*?)```", raw_output, flags=re.DOTALL)
     candidates.extend(item.strip() for item in fenced_json if item.strip())
+    
+    # Find all potential JSON objects (greedy match for largest JSON)
+    # Match from first { to last }
+    object_matches = re.finditer(r"\{", raw_output)
+    for start_match in object_matches:
+        # Find matching closing brace
+        depth = 0
+        start_pos = start_match.start()
+        for i in range(start_pos, len(raw_output)):
+            if raw_output[i] == '{':
+                depth += 1
+            elif raw_output[i] == '}':
+                depth -= 1
+                if depth == 0:
+                    candidates.append(raw_output[start_pos:i+1].strip())
+                    break
+    
+    # Find all potential JSON arrays
+    array_matches = re.finditer(r"\[", raw_output)
+    for start_match in array_matches:
+        depth = 0
+        start_pos = start_match.start()
+        for i in range(start_pos, len(raw_output)):
+            if raw_output[i] == '[':
+                depth += 1
+            elif raw_output[i] == ']':
+                depth -= 1
+                if depth == 0:
+                    candidates.append(raw_output[start_pos:i+1].strip())
+                    break
 
-    array_match = re.search(r"(\[\s*[\s\S]*\])", raw_output)
-    if array_match:
-        candidates.append(array_match.group(1).strip())
-
-    object_match = re.search(r"(\{\s*[\s\S]*\})", raw_output)
-    if object_match:
-        candidates.append(object_match.group(1).strip())
-
+    # Try parsing each candidate, preferring longer ones (more complete)
     seen: Set[str] = set()
-    for candidate in candidates:
+    # Sort by length descending to try larger (potentially more complete) JSON first
+    candidates_sorted = sorted(set(candidates), key=len, reverse=True)
+    
+    for candidate in candidates_sorted:
         if not candidate or candidate in seen:
             continue
         seen.add(candidate)
         try:
-            return json.loads(candidate)
+            parsed = json.loads(candidate)
+            # Verify it's a dict or list, not just a string/number
+            if isinstance(parsed, (dict, list)):
+                return parsed
         except Exception:
             continue
+    
     return None
 
 

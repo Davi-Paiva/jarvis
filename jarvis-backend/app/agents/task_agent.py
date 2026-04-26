@@ -92,7 +92,7 @@ class TaskAgent:
                             attempt_feedback.append(
                                 _feedback(
                                     "patch_strategy_switch",
-                                    "Switch strategy now: return replacement_files instead of another manual diff.",
+                                    "CRITICAL: Patch diffs are failing. You MUST switch to the replacement_files approach now. Set proposed_patch to null and populate replacement_files as a dict with file paths as keys and complete new file contents as values. Example: {\"src/pages/Home/Home.tsx\": \"complete file content here\"}. Do NOT attempt another manual diff.",
                                 )
                             )
                         if attempt < max_attempts:
@@ -128,7 +128,7 @@ class TaskAgent:
                             attempt_feedback.append(
                                 _feedback(
                                     "patch_strategy_switch",
-                                    "Switch strategy now: return replacement_files instead of another manual diff.",
+                                    "CRITICAL: Patch diffs are failing. You MUST switch to the replacement_files approach now. Set proposed_patch to null and populate replacement_files as a dict with file paths as keys and complete new file contents as values. Example: {\"src/pages/Home/Home.tsx\": \"complete file content here\"}. Do NOT attempt another manual diff.",
                                 )
                             )
                         if attempt < max_attempts:
@@ -229,6 +229,24 @@ class TaskAgent:
                             )
                         )
                         continue
+                if attempt < max_attempts and _mentions_needing_files(result.result_summary):
+                    auto_contents = self._load_auto_candidate_file_contents(
+                        repo_path=repo_state.repo_path,
+                        visible_files=visible_files,
+                        already_loaded=requested_file_contents,
+                    )
+                    if auto_contents:
+                        requested_file_contents.extend(auto_contents)
+                    attempt_feedback.append(
+                        _feedback(
+                            "forgot_needed_files_array",
+                            "CRITICAL: Your result_summary mentions needing files, but the `needed_files` array is empty. "
+                            "You MUST populate the `needed_files` array with exact file paths like ['src/pages/Home/Home.tsx', 'src/App.tsx']. "
+                            "Do NOT just describe what you need in result_summary - actually add the paths to the needed_files array. "
+                            "If you mention files are 'not available' or 'needed', you MUST request them via needed_files.",
+                        )
+                    )
+                    continue
                 break
 
             if result is None:
@@ -313,11 +331,11 @@ class TaskAgent:
     ) -> str:
         return build_file_content_sections(
             repo_path=repo_state.repo_path,
-            files=pick_candidate_files(_context_text_chunks(repo_state, self.state), visible_files),
+            files=pick_candidate_files(_context_text_chunks(repo_state, self.state), visible_files, limit=12),
             read_file=self.executor.read_file,
-            max_files=8,
-            max_chars=2500,
-            max_lines=80,
+            max_files=12,
+            max_chars=50000,
+            max_lines=800,
         )
 
     def _load_requested_file_contents(
@@ -338,7 +356,7 @@ class TaskAgent:
             if not matched or matched in loaded_paths:
                 continue
             try:
-                content = self.executor.read_file(repo_path, matched, max_chars=12000)
+                content = self.executor.read_file(repo_path, matched, max_chars=100000)
             except Exception:
                 continue
             contents.append("File: %s\n%s" % (matched, content))
@@ -366,7 +384,7 @@ class TaskAgent:
             if matched in loaded_paths:
                 continue
             try:
-                content = self.executor.read_file(repo_path, matched, max_chars=12000)
+                content = self.executor.read_file(repo_path, matched, max_chars=100000)
             except Exception:
                 continue
             contents.append("File: %s\n%s" % (matched, content))
@@ -467,11 +485,26 @@ def _compose_attempt_context(
             "Requested file contents:\n%s" % "\n\n".join(requested_file_contents)
         )
     if attempt_feedback:
+        feedback_text = "\n".join("- %s" % item for item in attempt_feedback[-3:])
+        
+        # Check if we've been explicitly told to switch to replacement_files
+        has_strategy_switch = any("patch_strategy_switch" in item for item in attempt_feedback[-3:])
+        
+        if has_strategy_switch:
+            instruction = (
+                "CRITICAL INSTRUCTION: The feedback above tells you to use replacement_files. "
+                "You MUST set proposed_patch to null and use replacement_files instead. "
+                "Format: {\"path/to/file.tsx\": \"complete new file content as string\"}. "
+                "Include the full file content for each file you're modifying."
+            )
+        else:
+            instruction = (
+                "Your next response must either return a valid unified git diff in `proposed_patch`, "
+                "return complete final file contents in `replacement_files`, or request additional repository files through `needed_files`."
+            )
+        
         sections.append(
-            "Previous execution feedback:\n%s\n\n"
-            "Your next response must either return a valid unified git diff in `proposed_patch`, "
-            "return complete final file contents in `replacement_files`, or request additional repository files through `needed_files`."
-            % "\n".join("- %s" % item for item in attempt_feedback[-3:])
+            "Previous execution feedback:\n%s\n\n%s" % (feedback_text, instruction)
         )
     return "\n\n".join(section for section in sections if section.strip())
 
@@ -578,8 +611,11 @@ def _needs_full_file_context(result_summary: Optional[str]) -> bool:
         "full current contents",
         "full component content",
         "full contents of the page components",
+        "full contents of the home page files",
+        "current full contents",
         "shared component files",
         "need the full current contents",
+        "need the current full contents",
         "visible file previews are truncated",
         "before the full component content needed",
         "current repository snapshot",
@@ -607,3 +643,26 @@ def _should_retry_without_changes(result_summary: Optional[str]) -> bool:
         "not been applied yet",
     )
     return any(signal in summary for signal in placeholder_signals)
+
+
+def _mentions_needing_files(result_summary: Optional[str]) -> bool:
+    """Check if the model mentions needing files but didn't populate needed_files array."""
+    summary = " ".join((result_summary or "").lower().split())
+    if not summary:
+        return False
+    file_request_signals = (
+        "need the",
+        "needed for",
+        "are not directly available",
+        "not available as repository files",
+        "implementation files needed",
+        "requesting the exact",
+        "i am requesting",
+        "please provide",
+        "to safely implement",
+        "files are not",
+        "cannot access",
+        "without access to",
+        "require access to",
+    )
+    return any(signal in summary for signal in file_request_signals)
