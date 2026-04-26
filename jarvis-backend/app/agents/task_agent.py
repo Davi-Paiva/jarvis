@@ -146,34 +146,28 @@ class TaskAgent:
                         continue
 
                 if result.replacement_files:
-                    generated_patch = self.executor.build_patch_from_replacements(
-                        repo_path=repo_state.repo_path,
-                        replacements=result.replacement_files,
-                    )
-                    if generated_patch:
-                        self.state.proposed_patch = generated_patch
-                        try:
-                            changed = await self.executor.apply_patch(
-                                repo_path=repo_state.repo_path,
-                                patch_text=generated_patch,
-                                scope=_patch_scope(repo_state, self.state),
+                    try:
+                        changed = await self.executor.write_replacement_files(
+                            repo_path=repo_state.repo_path,
+                            replacements=result.replacement_files,
+                            scope=_patch_scope(repo_state, self.state),
+                        )
+                        consecutive_patch_failures = 0
+                        self.state.changed_files = changed
+                        break
+                    except Exception as exc:
+                        attempt_feedback.append(
+                            _feedback(
+                                "replacement_failure",
+                                "Attempt %s replacement_files failed: %s"
+                                % (attempt, str(exc)),
                             )
-                            consecutive_patch_failures = 0
-                            self.state.changed_files = changed
-                            break
-                        except Exception as exc:
-                            attempt_feedback.append(
-                                _feedback(
-                                    "patch_apply_failure",
-                                    "Attempt %s generated patch from replacement_files failed: %s"
-                                    % (attempt, str(exc)),
-                                )
-                            )
-                            if attempt >= max_attempts:
-                                self.state.last_error = _build_patch_failure_error(attempt_feedback)
-                                self._set_status(TaskAgentStatus.FAILED)
-                                return self.state
-                            continue
+                        )
+                        if attempt >= max_attempts:
+                            self.state.last_error = _build_patch_failure_error(attempt_feedback)
+                            self._set_status(TaskAgentStatus.FAILED)
+                            return self.state
+                        continue
 
                 if result.changed_files:
                     self.state.changed_files = result.changed_files
