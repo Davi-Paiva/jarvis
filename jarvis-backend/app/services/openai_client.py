@@ -180,17 +180,10 @@ class FakeLLMClient(LLMClient):
         memory_context: str,
     ) -> str:
         goal = state.task_goal or "No task goal provided"
-        criteria = "\n".join("- %s" % item for item in state.acceptance_criteria) or "- Demo-safe completion"
         return (
-            "Goal: %s\n\n"
-            "Acceptance criteria:\n%s\n\n"
-            "Plan:\n"
-            "1. Inspect relevant repository files.\n"
-            "2. Create scoped task agents for the work.\n"
-            "3. Apply only approved, scoped changes through LocalExecutor.\n"
-            "4. Run allowed validation commands when requested.\n"
-            "5. Produce a final report."
-        ) % (goal, criteria)
+            "I'll review the current code, make the necessary changes for %s, "
+            "and validate everything works as expected."
+        ) % goal
 
     async def split_tasks(
         self,
@@ -200,23 +193,8 @@ class FakeLLMClient(LLMClient):
         goal = state.task_goal or "Execute approved repository task"
         return [
             TaskPlanItem(
-                title="Inspect the repo",
-                description=f"I'll check out the current code and figure out where we need to make changes for {goal}",
-                scope=[],
-            ),
-            TaskPlanItem(
-                title="Plan the change",
-                description="Then I'll map the safest implementation approach using the current repository structure",
-                scope=[],
-            ),
-            TaskPlanItem(
-                title="Make the changes",
-                description="Next I'll update the code and keep the changes scoped to the approved goal",
-                scope=[],
-            ),
-            TaskPlanItem(
-                title="Validate the result",
-                description="Finally I'll run the relevant checks and summarize what changed",
+                title="Implement changes",
+                description=f"I'll make the code changes for {goal} and verify they work",
                 scope=[],
             ),
         ]
@@ -406,23 +384,21 @@ class OpenAIAgentsClient(FakeLLMClient):
     ) -> str:
         self._require_live_agent()
         prompt = (
-            "Create a detailed, conversational implementation plan in natural spoken language.\n\n"
-            "IMPORTANT: DO NOT use markdown formatting - no asterisks, no bold, no headers.\n"
-            "Write naturally for voice output as if explaining to a colleague.\n\n"
-            "GUIDELINES:\n"
-            "- Write 2-4 paragraphs explaining the overall approach\n"
-            "- When mentioning files, describe them naturally like a coworker would\n"
-            "- For example, say 'client.py in the services folder' not 'services/client.py'\n"
-            "- Mention specific relevant modules or components that will be involved\n"
-            "- Explain the high-level strategy and why this approach makes sense\n"
-            "- Use conversational, friendly tone\n"
-            "- Focus on the what and why, not detailed code\n"
-            "- Do not include auth or production-only work unless specifically requested\n\n"
+            "Create a SHORT high-level plan summary in natural spoken language.\n\n"
+            "IMPORTANT:\n"
+            "- Keep it to 2-3 sentences MAX\n"
+            "- Focus ONLY on the key changes that matter\n"
+            "- NO markdown formatting - no asterisks, no bold, no headers\n"
+            "- Write like you're texting a coworker\n"
+            "- Mention key files/components only if truly important\n"
+            "- When mentioning files, say 'client.py in services' not 'services/client.py'\n"
+            "- Skip implementation details - just the main approach\n"
+            "- Use contractions and casual tone\n\n"
             "Task goal: %s\n"
             "Requirements: %s\n\n"
             "Repository context:\n%s\n\n"
             "Memory context:\n%s\n\n"
-            "Provide a conversational plan explanation:"
+            "Provide a brief plan (2-3 sentences):"
         ) % (
             state.task_goal,
             state.requirements,
@@ -438,15 +414,14 @@ class OpenAIAgentsClient(FakeLLMClient):
     ) -> List[TaskPlanItem]:
         self._require_live_agent()
         prompt = (
-            "Turn this implementation request into 2 to 3 concrete reviewable steps as a JSON array.\n"
-            "Each item must have title, description, and scope.\n\n"
+            "Create a SINGLE step that covers the implementation as a JSON array with one item.\n"
+            "The item must have title, description, and scope.\n\n"
             "IMPORTANT REQUIREMENTS:\n"
-            "- Keep it to 2-3 steps MAX - combine related work\n"
-            "- Do not just paraphrase the user's request\n"
-            "- Do not quote or copy the user's original prompt verbatim in any step description\n"
-            "- Write like you're explaining to a coworker - use 'I'll' or 'We'll' or 'Let's'\n"
+            "- Return exactly ONE step that covers all the work\n"
+            "- Title should be SHORT - max 4-5 words\n"
+            "- Description should be 1 sentence explaining what will change\n"
+            "- Write like you're texting a coworker - use 'I'll' or 'We'll'\n"
             "- Be casual and conversational - contractions are good\n"
-            "- Write for natural voice output\n"
             "- When mentioning files, use natural language like 'client.py in services'\n"
             "- One sentence per description - keep it brief\n"
             "- In the 'scope' array, include actual file paths or patterns for technical processing\n\n"
