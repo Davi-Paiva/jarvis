@@ -20,6 +20,12 @@ class UserTranscriptMessage(BaseModel):
     repoAgentId: Optional[str] = None
 
 
+class SwitchRepoMessage(BaseModel):
+    type: Literal["SWITCH_REPO"]
+    sessionId: Optional[str] = None
+    repoAgentId: str = Field(min_length=1)
+
+
 class VoiceChatMessage(BaseModel):
     type: Literal["CHAT_MESSAGE"] = "CHAT_MESSAGE"
     id: str
@@ -107,7 +113,7 @@ class PendingTurnMessage(BaseModel):
     pendingTurn: PendingTurnSummary
 
 
-ClientToServerMessage = Union[SessionStartMessage, UserTranscriptMessage]
+ClientToServerMessage = Union[SessionStartMessage, UserTranscriptMessage, SwitchRepoMessage]
 ServerToClientMessage = Union[
     SessionStateMessage,
     VoiceChatMessage,

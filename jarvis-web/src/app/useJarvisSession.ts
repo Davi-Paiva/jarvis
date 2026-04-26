@@ -7,6 +7,7 @@ import type {
   RepoSummary,
   ServerToClientMessage,
   SessionStateMessage,
+  SwitchRepoMessage,
   VoiceChatMessage,
 } from '../voice/types/protocol';
 
@@ -24,6 +25,7 @@ export function useJarvisSession() {
   >('disconnected');
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [activeRepoAgentId, setActiveRepoAgentId] = useState<string | null>(null);
+  const [repos, setRepos] = useState<RepoSummary[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
   const [pendingTurns, setPendingTurns] = useState<PendingTurnSummary[]>([]);
   const [activeAgentSummary, setActiveAgentSummary] = useState<RepoSummary | null>(null);
@@ -36,6 +38,7 @@ export function useJarvisSession() {
         setSessionId,
         setConnectionState,
         setActiveRepoAgentId,
+        setRepos,
         setMessages,
         setPendingTurns,
         setActiveAgentSummary,
@@ -113,34 +116,22 @@ export function useJarvisSession() {
     [activeRepoAgentId, pendingTurns, sessionId, voice],
   );
 
-  const approveAction = useCallback(
-    (id: string) => {
-      const pendingTurn = pendingTurns.find((turn) => turn.turnId === id);
-      if (!pendingTurn) {
-        return;
+  const switchRepository = useCallback(
+    (repoAgentId: string) => {
+      const repo = repos.find((item) => item.repoAgentId === repoAgentId);
+      if (!repo) {
+        return false;
       }
-      voice.sendTranscript('yes', {
-        sessionId: sessionId ?? undefined,
-        repoAgentId: pendingTurn.repoAgentId,
-        turnId: pendingTurn.turnId,
-      });
-    },
-    [pendingTurns, sessionId, voice],
-  );
 
-  const rejectAction = useCallback(
-    (id: string) => {
-      const pendingTurn = pendingTurns.find((turn) => turn.turnId === id);
-      if (!pendingTurn) {
-        return;
-      }
-      voice.sendTranscript('no', {
+      const payload: SwitchRepoMessage = {
+        type: 'SWITCH_REPO',
         sessionId: sessionId ?? undefined,
-        repoAgentId: pendingTurn.repoAgentId,
-        turnId: pendingTurn.turnId,
-      });
+        repoAgentId,
+      };
+
+      return voice.sendClientMessage(payload);
     },
-    [pendingTurns, sessionId, voice],
+    [repos, sessionId, voice],
   );
 
   const approvals = useMemo<ApprovalRequest[]>(
@@ -169,12 +160,14 @@ export function useJarvisSession() {
     transcript: voice.transcript,
     getVolume: voice.getVolume,
     messages,
+    repos,
+    activeRepoAgentId,
+    pendingTurns,
     activeAgent,
     approvals,
     connect,
     sendMessage,
-    approveAction,
-    rejectAction,
+    switchRepository,
   };
 }
 
@@ -185,6 +178,7 @@ function handleServerMessage(
     value: 'disconnected' | 'connecting' | 'connected',
   ) => void,
   setActiveRepoAgentId: (value: string | null) => void,
+  setRepos: (value: RepoSummary[]) => void,
   setMessages: (value: Message[] | ((prev: Message[]) => Message[])) => void,
   setPendingTurns: (
     value:
@@ -198,6 +192,7 @@ function handleServerMessage(
     setSessionId(state.sessionId);
     setConnectionState('connected');
     setActiveRepoAgentId(state.activeRepoAgentId ?? null);
+    setRepos(state.repos);
     setActiveAgentSummary(state.activeAgent ?? null);
     setMessages(state.messages.map(mapVoiceChatMessage));
     setPendingTurns(state.pendingTurns);

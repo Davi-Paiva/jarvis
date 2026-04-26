@@ -20,6 +20,7 @@ from app.models.voice_protocol import (
     ServerToClientMessage,
     SessionStartMessage,
     SessionStateMessage,
+    SwitchRepoMessage,
     UserTranscriptMessage,
 )
 
@@ -294,6 +295,21 @@ async def websocket_voice(websocket: WebSocket) -> None:
                                 text=transcript.text,
                                 repo_agent_id=transcript.repoAgentId,
                                 turn_id=transcript.turnId,
+                            )
+                        )
+                elif message_type == "SWITCH_REPO":
+                    switch_message = SwitchRepoMessage.model_validate(payload)
+                    session_id = switch_message.sessionId or session_id
+                    if session_id is None:
+                        startup_messages = voice_service.start_session()
+                        if startup_messages and isinstance(startup_messages[0], SessionStateMessage):
+                            session_id = startup_messages[0].sessionId
+                        messages.extend(startup_messages)
+                    if session_id is not None:
+                        messages.extend(
+                            await voice_service.handle_switch_repo_by_id(
+                                session_id=session_id,
+                                repo_agent_id=switch_message.repoAgentId,
                             )
                         )
                 else:

@@ -27,15 +27,16 @@ function App() {
         speaking={session.speaking}
         transcript={session.transcript}
         messages={session.messages}
+        repos={session.repos}
+        activeRepoAgentId={session.activeRepoAgentId}
         activeAgent={session.activeAgent}
         getVolume={session.getVolume}
         onSendMessage={session.sendMessage}
+        onSwitchRepository={session.switchRepository}
       />
       {pendingApproval && (
         <ApprovalModal
           approval={pendingApproval}
-          onApprove={session.approveAction}
-          onReject={session.rejectAction}
         />
       )}
     </>

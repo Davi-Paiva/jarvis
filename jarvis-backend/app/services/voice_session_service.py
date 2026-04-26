@@ -124,6 +124,42 @@ class VoiceSessionService:
 
         return await self._handle_repo_request(runtime, text)
 
+    async def handle_switch_repo_by_id(
+        self,
+        session_id: str,
+        repo_agent_id: str,
+    ) -> List[ServerToClientMessage]:
+        runtime = self._get_or_create_runtime(session_id=session_id)
+        self._hydrate_runtime(runtime)
+
+        known_repo_ids = {
+            state.repo_agent_id
+            for state in self.orchestrator.registry.list_agents(user_id=runtime.user_id)
+        }
+        if repo_agent_id not in known_repo_ids:
+            return [
+                AIResponseMessage(
+                    responseText="I couldn't find that repository in this session."
+                ),
+                self._build_session_state(runtime),
+            ]
+
+        runtime.active_repo_agent_id = repo_agent_id
+        runtime.active_chat_id = self._maybe_get_active_chat_id(repo_agent_id)
+        if runtime.active_chat_id is not None:
+            runtime.chat_by_repo[repo_agent_id] = runtime.active_chat_id
+
+        messages: List[ServerToClientMessage] = [
+            AIResponseMessage(
+                responseText="Switched to %s." % self._display_name_for_repo_id(repo_agent_id),
+                repoAgentId=repo_agent_id,
+                chatId=runtime.active_chat_id,
+            ),
+            self._build_session_state(runtime),
+        ]
+        messages.extend(self._maybe_prompt_for_active_turn(runtime))
+        return messages
+
     async def handle_manager_event(
         self,
         session_id: str,

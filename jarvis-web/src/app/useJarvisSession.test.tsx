@@ -19,18 +19,16 @@ function SessionHarness() {
       </button>
       <button
         type="button"
-        onClick={() =>
-          session.approvals[0] && session.approveAction(session.approvals[0].id)
-        }
+        onClick={() => session.switchRepository('repo-2')}
       >
-        approve
+        switch
       </button>
     </div>
   )
 }
 
 describe('useJarvisSession', () => {
-  it('hydrates state from websocket messages and sends approval replies', () => {
+  it('hydrates state from websocket messages and can request repository switch', () => {
     const socket = new MockWebSocket()
 
     render(
@@ -44,7 +42,7 @@ describe('useJarvisSession', () => {
     })
 
     fireEvent.click(screen.getByText('connect'))
-    expect(JSON.parse(socket.sent[0])).toEqual({ type: 'SESSION_START' })
+    expect(JSON.parse(socket.sent[0])).toMatchObject({ type: 'SESSION_START' })
 
     act(() => {
       socket.emitMessage({
@@ -61,6 +59,15 @@ describe('useJarvisSession', () => {
             phase: 'WAITING_APPROVAL',
             status: 'waiting_approval',
             pendingTurns: 1,
+          },
+          {
+            repoAgentId: 'repo-2',
+            repoId: 'repo-record-2',
+            displayName: 'beta-app',
+            repoPath: '/tmp/beta-app',
+            phase: 'INTAKE',
+            status: 'running',
+            pendingTurns: 0,
           },
         ],
         activeAgent: {
@@ -111,15 +118,13 @@ describe('useJarvisSession', () => {
 
     expect(screen.getByTestId('approvals')).toHaveTextContent('1')
 
-    fireEvent.click(screen.getByText('approve'))
+    fireEvent.click(screen.getByText('switch'))
 
     const approvalReply = JSON.parse(socket.sent[socket.sent.length - 1])
-    expect(approvalReply).toMatchObject({
-      type: 'USER_TRANSCRIPT',
-      text: 'yes',
+    expect(approvalReply).toEqual({
+      type: 'SWITCH_REPO',
       sessionId: 'session-1',
-      repoAgentId: 'repo-1',
-      turnId: 'turn-1',
+      repoAgentId: 'repo-2',
     })
   })
 })

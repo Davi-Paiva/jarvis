@@ -177,6 +177,69 @@ def test_voice_websocket_notifies_pending_turn_from_another_repo(tmp_path):
                 assert _has_stream_end(notified)
 
 
+def test_voice_websocket_switch_repo_message_updates_session_without_user_chat(tmp_path):
+    repo_one = tmp_path / "alpha-app"
+    repo_two = tmp_path / "beta-app"
+    repo_one.mkdir()
+    repo_two.mkdir()
+    (repo_one / ".git").mkdir()
+    (repo_two / ".git").mkdir()
+    (repo_one / "main.py").write_text("print('one')\n", encoding="utf-8")
+    (repo_two / "main.py").write_text("print('two')\n", encoding="utf-8")
+
+    app = _app(tmp_path)
+    orchestrator = app.state.orchestrator
+
+    alpha_state, _ = asyncio.run(orchestrator.activate_repo_agent(str(repo_one)))
+    beta_state, _ = asyncio.run(orchestrator.activate_repo_agent(str(repo_two)))
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as websocket:
+            websocket.send_json({"type": "SESSION_START"})
+            initial_state = websocket.receive_json()
+            assert initial_state["type"] == "SESSION_STATE"
+            assert initial_state["activeRepoAgentId"] == alpha_state.repo_agent_id
+            session_id = initial_state["sessionId"]
+            initial_guidance = collect_until_voice_response(websocket)
+            assert _has_voice_response(initial_guidance)
+
+            websocket.send_json(
+                {
+                    "type": "SWITCH_REPO",
+                    "sessionId": session_id,
+                    "repoAgentId": beta_state.repo_agent_id,
+                }
+            )
+
+            switch_events = collect_events_until(
+                websocket,
+                predicate=lambda events: (
+                    _find_event(events, "SESSION_STATE") is not None and any(
+                        event.get("type") == "SESSION_STATE"
+                        and event.get("activeRepoAgentId") == beta_state.repo_agent_id
+                        for event in events
+                    )
+                ),
+                max_events=500,
+            )
+            switched_state = next(
+                item
+                for item in switch_events
+                if item["type"] == "SESSION_STATE" and item["activeRepoAgentId"] == beta_state.repo_agent_id
+            )
+            switch_text = extract_voice_response_text(switch_events)
+
+            assert switched_state["activeAgent"]["repoAgentId"] == beta_state.repo_agent_id
+            assert not any(
+                item.get("type") == "CHAT_MESSAGE" and item.get("role") == "user"
+                for item in switch_events
+            )
+            if switch_text:
+                assert "Switched to beta-app" in switch_text
+            else:
+                assert _has_stream_end(switch_events)
+
+
 def collect_events_until(websocket, predicate, max_events=500):
     events = []
     for _ in range(max_events):

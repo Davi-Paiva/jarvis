@@ -12,6 +12,12 @@ export type UserTranscriptMessage = {
   repoAgentId?: string
 }
 
+export type SwitchRepoMessage = {
+  type: 'SWITCH_REPO'
+  sessionId?: string
+  repoAgentId: string
+}
+
 export type VoiceChatMessage = {
   type: 'CHAT_MESSAGE'
   id: string
@@ -106,7 +112,7 @@ export type PendingTurnMessage = {
   pendingTurn: PendingTurnSummary
 }
 
-export type ClientToServerMessage = SessionStartMessage | UserTranscriptMessage
+export type ClientToServerMessage = SessionStartMessage | UserTranscriptMessage | SwitchRepoMessage
 
 export type ServerToClientMessage =
   | SessionStateMessage
